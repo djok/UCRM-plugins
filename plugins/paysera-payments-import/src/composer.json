@@ -1,0 +1,7 @@
+{
+    "require": {
+        "php": ">=7.1",
+        "ubnt/ucrm-plugin-sdk": "~0.4",
+        "zbateson/mail-mime-parser": "^2.0"
+    }
+}

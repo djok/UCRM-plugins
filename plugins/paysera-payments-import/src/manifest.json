@@ -1,0 +1,27 @@
+{
+    "version": "1",
+    "information": {
+        "name": "paysera-payments-import",
+        "displayName": "Paysera Payments Import",
+        "description": "This plugin allows you to import payments from Paysera.",
+        "url": "https://github.com/djok/UCRM-plugins",
+        "version": "1.0.18",
+        "ucrmVersionCompliancy": {
+            "min": "2.14.0",
+            "max": null
+        },
+        "unmsVersionCompliancy": {
+            "min": "1.0.0-alpha.1",
+            "max": null
+        },
+        "author": "Rosen Velikov"
+    },
+    "configuration": [
+        {
+            "key": "sourceIp",
+            "label": "Source IP Address",
+            "description": "The IP address from which the plugin will accept requests.",
+            "required": 1
+        }
+    ]
+}
