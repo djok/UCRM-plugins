@@ -5,7 +5,7 @@
         "displayName": "Paysera Payments Import",
         "description": "This plugin allows you to import payments from Paysera.",
         "url": "https://github.com/djok/UCRM-plugins",
-        "version": "1.0.18",
+        "version": "1.0.19",
         "ucrmVersionCompliancy": {
             "min": "2.14.0",
             "max": null

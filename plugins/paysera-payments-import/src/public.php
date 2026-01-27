@@ -151,30 +151,34 @@ function parse_decoded_text($decoded_text)
         "memo" => ""
     ];
 
-    // 1) ПАРСВАМЕ РЕДА С "Плащане на стойност 1.00 BGN ..."
-    //    Пример: "Плащане на стойност 1.00 BGN е наредено ..."
-    //    Регекс (PCRE): /Плащане на стойност\s+([\d\.]+)\s+([A-Z]+)/
-    if (preg_match('/Плащане на стойност\s+([\d\.]+)\s+([A-Z]+)/u', $decoded_text, $matches)) {
-        $amountStr = $matches[1];  // "1.00"
-        $currency  = $matches[2];  // "BGN"
-
-        // Конвертираме стринга към float:
-        $amount = floatval($amountStr);
-
+    // 1) ПАРСВАМЕ СУМАТА И ВАЛУТАТА
+    //    Стар формат (BG): "Плащане на стойност 1.00 BGN е наредено ..."
+    //    Нов формат (LT): "... gautas 12.44 EUR pervedimas."
+    if (preg_match('/Плащане на стойност\s+([\d\.]+)\s+([A-Z]+)/u', $decoded_text, $matches)
+        || preg_match('/gautas\s+([\d\.,]+)\s+([A-Z]+)\s+pervedimas/u', $decoded_text, $matches)
+    ) {
+        $amount = floatval(str_replace(',', '.', $matches[1]));
         $result["amount"]   = $amount;
-        $result["currency"] = $currency;
+        $result["currency"] = $matches[2];
     }
 
-    // 2) ПАРСВАМЕ РЕДА С "Наредител: **ЕВО** (EVP5610010009412)"
-    //    Пример: "Наредител: **ЕВО** (EVP5610010009412)."
-    if (preg_match('/Наредител:\s*\*\*(.*?)\*\*\s*\((.*?)\)/u', $decoded_text, $matches)) {
-        $result["issuer_name"]                = $matches[1]; // "ЕВО"
-        $result["issuer_bank_account_number"] = $matches[2]; // "EVP5610010009412"
+    // 2) ПАРСВАМЕ НАРЕДИТЕЛ / MOKĖTOJAS
+    //    Стар формат (BG): "Наредител: **ЕВО** (EVP5610010009412)."
+    //    Нов формат (LT): "Mokėtojas: **ТРАВЪЛ КОНСУЛТИНГ ЕООД** (BG25UNCR70001522861305)."
+    if (preg_match('/Наредител:\s*\*\*(.*?)\*\*\s*\((.*?)\)/u', $decoded_text, $matches)
+        || preg_match('/Mokėtojas:\s*\*\*(.*?)\*\*\s*\((.*?)\)/u', $decoded_text, $matches)
+    ) {
+        $result["issuer_name"]                = $matches[1];
+        $result["issuer_bank_account_number"] = $matches[2];
     }
 
-    // 3) ПАРСВАМЕ РЕДА С "Основание за плащане: *временна финасова помощ*."
-    if (preg_match('/Основание за плащане:\s*\*(.*?)\*/u', $decoded_text, $matches)) {
-        $result["memo"] = $matches[1]; // "временна финасова помощ"
+    // 3) ПАРСВАМЕ ОСНОВАНИЕ ЗА ПЛАЩАНЕ / MOKĖJIMO PASKIRTIS
+    //    Стар формат (BG): "Основание за плащане: *временна финасова помощ*."
+    //    Нов формат (LT): "Mokėjimo paskirtis: *Фактура 2601000519*."
+    if (preg_match('/Основание за плащане:\s*\*(.*?)\*/u', $decoded_text, $matches)
+        || preg_match('/Mokėjimo paskirtis:\s*\*(.*?)\*/u', $decoded_text, $matches)
+    ) {
+        $result["memo"] = $matches[1];
     }
 
     return $result;
