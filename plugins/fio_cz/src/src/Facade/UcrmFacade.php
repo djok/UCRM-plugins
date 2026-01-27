@@ -4,32 +4,18 @@ declare(strict_types=1);
 
 namespace FioCz\Facade;
 
+use FioCz\Exception\CurlException;
 use FioCz\Service\Logger;
 use FioCz\Service\OptionsManager;
 use FioCz\Service\UcrmApi;
 
 class UcrmFacade
 {
-    /**
-     * @var Logger
-     */
-    private $logger;
-
-    /**
-     * @var OptionsManager
-     */
-    private $optionsManager;
-
-    /**
-     * @var UcrmApi
-     */
-    private $ucrmApi;
-
-    public function __construct(Logger $logger, OptionsManager $optionsManager, UcrmApi $ucrmApi)
-    {
-        $this->logger = $logger;
-        $this->optionsManager = $optionsManager;
-        $this->ucrmApi = $ucrmApi;
+    public function __construct(
+        private Logger $logger,
+        private OptionsManager $optionsManager,
+        private UcrmApi $ucrmApi
+    ) {
     }
 
     /**
@@ -44,34 +30,43 @@ class UcrmFacade
 
         $this->logger->info(sprintf('Processing transaction %s.', $transaction['id']));
 
-        $matched = $this->matchClientFromUcrm($transaction, $optionsData->paymentMatchAttribute);
-        if ($matched || $optionsData->importUnattached) {
-            if ($matched) {
-                [$clientId, $invoiceId] = $matched;
-                $this->logger->info(sprintf('Matched transaction %s to client %s, invoice %s', $transaction['id'], $clientId, $invoiceId));
-            } else {
-                $this->logger->info(sprintf('Not matched transaction %s, importing as unattached', $transaction['id']));
+        $matchAttributes = explode(';', $optionsData->paymentMatchAttribute);
+
+        $matched = null;
+        foreach ($matchAttributes as $matchAttribute) {
+            $matched = $this->matchClientFromUcrm($transaction, $matchAttribute);
+            if ($matched !== null) {
+                break;
             }
-            $this->sendPaymentToUcrm(
-                $this->transformTransactionToUcrmPayment(
-                    $transaction,
-                    $methodId,
-                    $clientId ?? null,
-                    $invoiceId ?? null
-                )
-            );
-
-            $optionsData->lastProcessedPayment = $transaction['id'];
-            $optionsData->lastProcessedPaymentDateTime = $transaction['date'];
-            $this->optionsManager->updateOptions();
-            $this->logger->debug(sprintf('lastProcessedPayment set to %s', $optionsData->lastProcessedPayment));
-
-            return true;
         }
-        $this->logger->warning(sprintf('Not matched, skipping transaction %s', $transaction['id']));
-        $this->logger->info('To import unmatched payments, enable "Import all payments" in plugin\'s settings.)');
 
-        return false;
+        if ($matched === null && ! $optionsData->importUnattached) {
+            $this->logger->warning(sprintf('Not matched, skipping transaction %s', $transaction['id']));
+            $this->logger->info('To import unmatched payments, enable "Import all payments" in plugin\'s settings.)');
+
+            return false;
+        }
+
+        if ($matched !== null) {
+            [$clientId, $invoiceId] = $matched;
+            if ($invoiceId === null) {
+                $this->logger->info(sprintf('Matched transaction %s to client %s', $transaction['id'], $clientId));
+            } else {
+                $this->logger->info(sprintf('Matched transaction %s to client %s, invoice %s', $transaction['id'], $clientId, $invoiceId));
+            }
+
+            $this->sendMatched($transaction, $methodId, $clientId, $invoiceId);
+        } else {
+            $this->logger->info(sprintf('Not matched transaction %s, importing as unattached', $transaction['id']));
+            $this->sendUnmatched($transaction, $methodId);
+        }
+
+        $optionsData->lastProcessedPayment = $transaction['id'];
+        $optionsData->lastProcessedPaymentDateTime = $transaction['date'];
+        $this->optionsManager->updateOptions();
+        $this->logger->debug(sprintf('lastProcessedPayment set to %s', $optionsData->lastProcessedPayment));
+
+        return true;
     }
 
     public function getPaymentMethod(): string
@@ -84,11 +79,17 @@ class UcrmFacade
     }
 
     /**
+     * @return array<int, ?int>|null
      * @throws \FioCz\Exception\CurlException
      * @throws \ReflectionException
      */
-    private function matchClientFromUcrm(array $transaction, $matchBy): ?array
+    private function matchClientFromUcrm(array $transaction, string $matchBy): ?array
     {
+        $matchBy = trim($matchBy);
+        if ($matchBy === '') {
+            return null;
+        }
+
         $endpoint = 'clients';
 
         if ($matchBy === 'invoiceNumber') {
@@ -193,5 +194,42 @@ class UcrmFacade
         return ($this->optionsManager->loadOptions()->unmsLocalUrl ?? null)
             ? 3
             : 2;
+    }
+
+    /**
+     * @throws CurlException
+     * @throws \ReflectionException
+     */
+    private function sendMatched(array $transaction, string $methodId, int $clientId, ?int $invoiceId = null): void
+    {
+        try {
+            $this->sendPaymentToUcrm(
+                $this->transformTransactionToUcrmPayment($transaction, $methodId, $clientId, $invoiceId)
+            );
+        } catch (CurlException $exception) {
+            if ($exception->getCode() !== 422) {
+                throw $exception;
+            }
+
+            $this->logger->info(
+                sprintf(
+                    'Invoice ID %s is either already paid, voided or a draft. Importing without invoice ID.',
+                    $invoiceId
+                )
+            );
+
+            $this->sendPaymentToUcrm($this->transformTransactionToUcrmPayment($transaction, $methodId, $clientId));
+        }
+    }
+
+    /**
+     * @throws CurlException
+     * @throws \ReflectionException
+     */
+    private function sendUnmatched(array $transaction, string $methodId): void
+    {
+        $this->sendPaymentToUcrm(
+            $this->transformTransactionToUcrmPayment($transaction, $methodId)
+        );
     }
 }
