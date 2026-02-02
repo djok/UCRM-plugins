@@ -97,7 +97,6 @@ class ExportGenerator
             'Client ID',
             'Client Type',
             'Client Name',
-            'Company Name',
             'Company ID (EIK)',
             'VAT ID',
             'Personal ID',
@@ -119,7 +118,6 @@ class ExportGenerator
         $rows = [];
         $client = $this->clientMap[$payment['clientId']] ?? [];
         $clientName = $this->formatClientName($client);
-        $companyName = $client['companyName'] ?? '';
         $clientType = $this->formatClientType($client);
         $companyId = $client['companyRegistrationNumber'] ?? '';
         $vatId = $client['companyTaxId'] ?? '';
@@ -138,7 +136,6 @@ class ExportGenerator
             $payment['clientId'] ?? '',
             $clientType,
             $clientName,
-            $companyName,
             $companyId,
             $vatId,
             $personalId,

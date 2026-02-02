@@ -96,7 +96,7 @@
                             </p>
                             <p class="small text-muted mb-0">
                                 <strong>Columns:</strong> Organization, Payment ID, Provider Payment ID, Payment Date,
-                                Client ID, Client Type, Client Name, Company Name, Company ID (EIK), VAT ID, Personal ID,
+                                Client ID, Client Type, Client Name, Company ID (EIK), VAT ID, Personal ID,
                                 Payment Method, Currency, Total Payment Amount, Credit Amount,
                                 Invoice Number, Invoice Date, Invoice Total, Invoice Status,
                                 Amount Applied to Invoice, Note
