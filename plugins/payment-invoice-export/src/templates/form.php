@@ -61,6 +61,14 @@
                                                class="form-control form-control-sm" placeholder="YYYY-MM-DD">
                                     </div>
 
+                                    <!-- Include PDFs checkbox -->
+                                    <div class="col-md-2 mb-2 d-flex align-items-end">
+                                        <div class="form-check">
+                                            <input type="checkbox" name="includePdfs" value="1" id="frm-includePdfs" class="form-check-input">
+                                            <label class="form-check-label" for="frm-includePdfs"><small>Включи PDF на фактури</small></label>
+                                        </div>
+                                    </div>
+
                                     <!-- Export Button -->
                                     <div class="col-auto ml-auto mb-2">
                                         <button type="submit" class="btn btn-primary btn-sm pl-4 pr-4">
