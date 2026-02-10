@@ -38,6 +38,30 @@ class ExportGenerator
         $csv->download($filename);
     }
 
+    /**
+     * Generate CSV file to disk with Windows-1251 encoding and semicolon delimiter.
+     */
+    public function generateCsvToFile(string $filepath, array $payments): void
+    {
+        $csv = Writer::createFromFileObject(new SplTempFileObject());
+        $csv->setDelimiter(';');
+
+        $csv->insertOne($this->getHeaderLine());
+
+        foreach ($payments as $payment) {
+            $rows = $this->getPaymentRows($payment);
+            foreach ($rows as $row) {
+                $csv->insertOne($row);
+            }
+        }
+
+        // Convert to Windows-1251, strip CSV enclosure quotes
+        $content = $csv->toString();
+        $content = str_replace('"', '', $content);
+        $convertedContent = iconv('UTF-8', 'WINDOWS-1251//TRANSLIT', $content);
+        file_put_contents($filepath, $convertedContent);
+    }
+
     public function generateXlsx(string $filename, array $payments): void
     {
         $spreadsheet = new Spreadsheet();
@@ -85,6 +109,54 @@ class ExportGenerator
 
         $writer = new Xlsx($spreadsheet);
         $writer->save('php://output');
+    }
+
+    /**
+     * Generate XLSX file to disk.
+     */
+    public function generateXlsxToFile(string $filepath, array $payments): void
+    {
+        $spreadsheet = new Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Payments');
+
+        // Set headers
+        $headers = $this->getHeaderLine();
+        $col = 1;
+        foreach ($headers as $header) {
+            $sheet->setCellValueByColumnAndRow($col, 1, $header);
+            $col++;
+        }
+
+        // Style headers
+        $lastCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($headers));
+        $sheet->getStyle('A1:' . $lastCol . '1')->getFont()->setBold(true);
+        $sheet->getStyle('A1:' . $lastCol . '1')->getFill()
+            ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+            ->getStartColor()->setARGB('FFE0E0E0');
+
+        // Add data rows
+        $rowNum = 2;
+        foreach ($payments as $payment) {
+            $rows = $this->getPaymentRows($payment);
+            foreach ($rows as $row) {
+                $col = 1;
+                foreach ($row as $value) {
+                    $sheet->setCellValueByColumnAndRow($col, $rowNum, $value);
+                    $col++;
+                }
+                $rowNum++;
+            }
+        }
+
+        // Auto-size columns
+        foreach (range('A', $lastCol) as $columnID) {
+            $sheet->getColumnDimension($columnID)->setAutoSize(true);
+        }
+
+        // Save to file
+        $writer = new Xlsx($spreadsheet);
+        $writer->save($filepath);
     }
 
     private function getHeaderLine(): array

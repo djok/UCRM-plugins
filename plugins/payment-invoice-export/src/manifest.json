@@ -5,7 +5,7 @@
     "displayName": "Payment Invoice CSV Export",
     "description": "Export payments with linked invoice details to CSV. Shows which invoices were paid with each payment and how much was applied to each invoice. Supports predefined periods (month, quarter, year) and organization filtering.",
     "url": "https://github.com/Ubiquiti-App/UCRM-plugins/tree/master/plugins/payment-invoice-export",
-    "version": "1.0.1",
+    "version": "1.0.3",
     "ucrmVersionCompliancy": {
       "min": "2.14.0",
       "max": null
@@ -22,6 +22,15 @@
       "label": "Payment Invoice Export",
       "type": "admin",
       "target": "iframe"
+    },
+    {
+      "key": "System",
+      "label": "Export Service Mapping",
+      "type": "admin",
+      "target": "iframe",
+      "parameters": {
+        "page": "settings"
+      }
     }
   ]
 }
