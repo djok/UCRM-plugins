@@ -435,6 +435,14 @@ if ($request->isMethod('POST')) {
         generateControlsXlsx($controlsXlsxPath, $invoices, $creditNotes, $zeroTotalInvoices, $nonZeroInvoices);
         $files[] = ['path' => $controlsXlsxPath, 'name' => "controls_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
 
+        // Save totals before freeing nonZeroInvoices (needed for UI controlsData)
+        $exportedUntaxedSum = 0.0;
+        $exportedVatSum = 0.0;
+        foreach ($nonZeroInvoices as $inv) {
+            $exportedUntaxedSum += (float)($inv['totalUntaxed'] ?? 0);
+            $exportedVatSum += (float)($inv['totalTaxAmount'] ?? 0);
+        }
+
         // Free invoice items from main arrays (items are only needed in $salesDocuments)
         foreach ($invoices as &$inv) { unset($inv['items']); }
         unset($inv);
@@ -525,14 +533,22 @@ if ($request->isMethod('POST')) {
         }, $invoices));
         sort($invoiceNumbers);
 
-        $missingNumbers = findMissingInvoiceNumbers($invoiceNumbers);
+        // Group by month and find missing numbers per month
+        $invoicesByMonth = [];
+        foreach ($invoices as $inv) {
+            $number = $inv['number'] ?? '';
+            if ($number === '') continue;
+            $date = $inv['createdDate'] ?? '';
+            $month = $date ? substr($date, 0, 7) : 'unknown';
+            $invoicesByMonth[$month][] = $number;
+        }
+        ksort($invoicesByMonth);
 
-        // Calculate totals for exported (non-zero) invoices
-        $exportedUntaxedSum = 0.0;
-        $exportedVatSum = 0.0;
-        foreach ($nonZeroInvoices as $inv) {
-            $exportedUntaxedSum += (float)($inv['totalUntaxed'] ?? 0);
-            $exportedVatSum += (float)($inv['totalTaxAmount'] ?? 0);
+        $missingNumbers = [];
+        foreach ($invoicesByMonth as $month => $numbers) {
+            foreach (findMissingInvoiceNumbers($numbers) as $m) {
+                $missingNumbers[] = $m;
+            }
         }
 
         $controlsData = [
