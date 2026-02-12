@@ -140,6 +140,13 @@ $controlsData = null;
 $isAjax = $request->headers->get('X-Requested-With') === 'XMLHttpRequest';
 
 if ($request->isMethod('POST')) {
+    // Prevent PHP errors/warnings from corrupting JSON response
+    if ($isAjax) {
+        ini_set('display_errors', '0');
+        ob_start();
+    }
+    set_time_limit(0);
+
     try {
         clearProgress();
         writeProgress(0, 11, 'Стартиране на експорта...');
@@ -489,6 +496,7 @@ if ($request->isMethod('POST')) {
 
         // Return JSON for AJAX requests
         if ($isAjax) {
+            if (ob_get_level()) ob_end_clean();
             header('Content-Type: application/json');
             echo json_encode(['success' => true, 'data' => $controlsData]);
             exit;
@@ -498,6 +506,7 @@ if ($request->isMethod('POST')) {
         $log->appendLog(sprintf('ERROR: %s in %s:%d', $e->getMessage(), $e->getFile(), $e->getLine()));
         clearProgress();
         if ($isAjax) {
+            if (ob_get_level()) ob_end_clean();
             header('Content-Type: application/json');
             http_response_code(500);
             echo json_encode(['success' => false, 'error' => $e->getMessage()]);
