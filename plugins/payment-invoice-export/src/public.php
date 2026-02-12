@@ -25,6 +25,48 @@ require __DIR__ . '/vendor/autoload.php';
 
 $log = PluginLogManager::create();
 
+// Register shutdown handler to catch fatal errors (memory limit, etc.)
+register_shutdown_function(function () use ($log) {
+    $error = error_get_last();
+    if ($error && in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE])) {
+        $msg = sprintf(
+            'FATAL: %s in %s:%d | Memory: %s / %s',
+            $error['message'],
+            $error['file'],
+            $error['line'],
+            formatBytes(memory_get_usage(true)),
+            ini_get('memory_limit')
+        );
+        $log->appendLog($msg);
+        // Also write to progress file so the UI can show what happened
+        $dir = __DIR__ . '/data';
+        if (is_dir($dir)) {
+            file_put_contents(
+                $dir . '/export-progress.json',
+                json_encode(['step' => 0, 'total' => 1, 'message' => 'FATAL: ' . $error['message']])
+            );
+        }
+    }
+});
+
+function formatBytes(int $bytes): string
+{
+    if ($bytes >= 1048576) return round($bytes / 1048576, 1) . 'MB';
+    if ($bytes >= 1024) return round($bytes / 1024, 1) . 'KB';
+    return $bytes . 'B';
+}
+
+function logMemory($log, string $label): void
+{
+    $log->appendLog(sprintf(
+        '[MEM] %s — used: %s, peak: %s, limit: %s',
+        $label,
+        formatBytes(memory_get_usage(true)),
+        formatBytes(memory_get_peak_usage(true)),
+        ini_get('memory_limit')
+    ));
+}
+
 // Retrieve API connection.
 $api = UcrmApi::create();
 
@@ -151,6 +193,7 @@ if ($request->isMethod('POST')) {
         clearProgress();
         writeProgress(0, 11, 'Стартиране на експорта...');
         $log->appendLog('Export started');
+        logMemory($log, 'Export start');
 
         $organizationId = $request->request->get('organization');
         $period = $request->request->get('period');
@@ -251,6 +294,7 @@ if ($request->isMethod('POST')) {
         // Filter by organization
         $payments = filterPaymentsByOrganization($api, $payments, (int) $organizationId);
         $log->appendLog(sprintf('After org filter: %d payments', count($payments)));
+        logMemory($log, 'After payments fetch');
 
         // Enrich payments with invoice details
         writeProgress(3, 11, sprintf('Обработка на %d плащания...', count($payments)));
@@ -333,6 +377,7 @@ if ($request->isMethod('POST')) {
         $nonZeroCreditNotes = array_values($nonZeroCreditNotes);
 
         $log->appendLog(sprintf('Zero-total invoices excluded from sales: %d', count($zeroTotalInvoices)));
+        logMemory($log, 'After invoices + credit notes enrichment');
 
         // ============================================
         // DOWNLOAD INVOICE PDFs
@@ -364,6 +409,7 @@ if ($request->isMethod('POST')) {
                 }
             }
             $log->appendLog(sprintf('Downloaded %d PDFs for %s', count($pdfFiles), $pdfLabel));
+            logMemory($log, 'After PDF downloads');
         }
 
         // Combine non-zero invoices and credit notes for sales export
@@ -394,6 +440,7 @@ if ($request->isMethod('POST')) {
 
         $files[] = ['path' => $paymentsCsvPath, 'name' => "payments_{$dateFromFormatted}_{$dateToFormatted}.csv"];
         $files[] = ['path' => $paymentsXlsxPath, 'name' => "payments_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
+        logMemory($log, 'After payments report generation');
 
         // Generate Sales Report
         writeProgress(10, 11, 'Генериране на отчет за продажби...');
@@ -408,6 +455,7 @@ if ($request->isMethod('POST')) {
 
         $files[] = ['path' => $salesCsvPath, 'name' => "sales_{$dateFromFormatted}_{$dateToFormatted}.csv"];
         $files[] = ['path' => $salesXlsxPath, 'name' => "sales_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
+        logMemory($log, 'After sales report generation');
 
         // Generate Controls Report
         $log->appendLog('Generating controls report...');
@@ -450,6 +498,7 @@ if ($request->isMethod('POST')) {
         $zipGenerator = new ZipGenerator();
         $zipGenerator->createToFile($zipPath, $files);
 
+        logMemory($log, 'After ZIP creation');
         $log->appendLog('Export generated successfully');
 
         // Build controls data for display

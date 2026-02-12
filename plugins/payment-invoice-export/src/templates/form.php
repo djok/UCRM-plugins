@@ -363,7 +363,23 @@
                         headers: { 'X-Requested-With': 'XMLHttpRequest' },
                         body: formData
                     })
-                    .then(function(r) { return r.json(); })
+                    .then(function(r) {
+                        if (!r.ok) {
+                            return r.text().then(function(body) {
+                                throw new Error('HTTP ' + r.status + ': ' + (body.substring(0, 200) || 'empty response'));
+                            });
+                        }
+                        return r.text().then(function(body) {
+                            if (!body || body.trim() === '') {
+                                throw new Error('Празен отговор от сървъра (вероятно memory limit или crash). Виж логовете на плъгина.');
+                            }
+                            try {
+                                return JSON.parse(body);
+                            } catch(e) {
+                                throw new Error('Невалиден JSON: ' + body.substring(0, 200));
+                            }
+                        });
+                    })
                     .then(function(resp) {
                         stopPolling();
                         if (resp.success) {
