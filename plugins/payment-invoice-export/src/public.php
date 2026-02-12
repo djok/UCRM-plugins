@@ -718,6 +718,28 @@ function generateControlsXlsx(string $filepath, array $invoices, array $creditNo
     $sheet->setCellValue('A6', 'Брой нулеви фактури');
     $sheet->setCellValue('B6', count($zeroTotalInvoices));
 
+    // Pre-compute missing numbers per month (used in summary + sheet 2)
+    $invoicesByMonth = [];
+    foreach ($invoices as $inv) {
+        $number = $inv['number'] ?? '';
+        if ($number === '') continue;
+        $date = $inv['createdDate'] ?? '';
+        $month = $date ? substr($date, 0, 7) : 'unknown'; // YYYY-MM
+        $invoicesByMonth[$month][] = $number;
+    }
+    ksort($invoicesByMonth);
+
+    $allMissing = [];
+    foreach ($invoicesByMonth as $month => $numbers) {
+        $missing = findMissingInvoiceNumbers($numbers);
+        foreach ($missing as $m) {
+            $allMissing[] = ['month' => $month, 'number' => $m];
+        }
+    }
+
+    $sheet->setCellValue('A7', 'Брой пропуснати номера');
+    $sheet->setCellValue('B7', count($allMissing));
+
     // Totals for exported (non-zero) invoices
     $exportedUntaxedSum = 0.0;
     $exportedVatSum = 0.0;
@@ -726,43 +748,45 @@ function generateControlsXlsx(string $filepath, array $invoices, array $creditNo
         $exportedVatSum += (float)($inv['totalTaxAmount'] ?? 0);
     }
 
-    $sheet->setCellValue('A8', 'Стойност без ДДС (експортирани)');
-    $sheet->setCellValue('B8', round($exportedUntaxedSum, 2));
-    $sheet->getStyle('B8')->getNumberFormat()->setFormatCode('#,##0.00');
-    $sheet->setCellValue('A9', 'ДДС (експортирани)');
-    $sheet->setCellValue('B9', round($exportedVatSum, 2));
+    $sheet->setCellValue('A9', 'Стойност без ДДС (експортирани)');
+    $sheet->setCellValue('B9', round($exportedUntaxedSum, 2));
     $sheet->getStyle('B9')->getNumberFormat()->setFormatCode('#,##0.00');
-    $sheet->setCellValue('A10', 'Общо с ДДС (експортирани)');
-    $sheet->setCellValue('B10', round($exportedUntaxedSum + $exportedVatSum, 2));
+    $sheet->setCellValue('A10', 'ДДС (експортирани)');
+    $sheet->setCellValue('B10', round($exportedVatSum, 2));
     $sheet->getStyle('B10')->getNumberFormat()->setFormatCode('#,##0.00');
-    $sheet->getStyle('A8:B10')->getFont()->setBold(true);
+    $sheet->setCellValue('A11', 'Общо с ДДС (експортирани)');
+    $sheet->setCellValue('B11', round($exportedUntaxedSum + $exportedVatSum, 2));
+    $sheet->getStyle('B11')->getNumberFormat()->setFormatCode('#,##0.00');
+    $sheet->getStyle('A9:B11')->getFont()->setBold(true);
 
     $sheet->getColumnDimension('A')->setAutoSize(true);
     $sheet->getColumnDimension('B')->setAutoSize(true);
 
-    // --- Sheet 2: Missing invoice numbers ---
+    // --- Sheet 2: Missing invoice numbers (per month) ---
     $missingSheet = $spreadsheet->createSheet();
     $missingSheet->setTitle('Пропуснати номера');
 
-    $missingSheet->setCellValue('A1', 'Пропуснат номер');
-    $missingSheet->getStyle('A1')->getFont()->setBold(true);
-    $missingSheet->getStyle('A1')->getFill()
+    $missingSheet->setCellValue('A1', 'Месец');
+    $missingSheet->setCellValue('B1', 'Пропуснат номер');
+    $missingSheet->getStyle('A1:B1')->getFont()->setBold(true);
+    $missingSheet->getStyle('A1:B1')->getFill()
         ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
         ->getStartColor()->setARGB('FFE0E0E0');
 
-    $missingNumbers = findMissingInvoiceNumbers($invoiceNumbers);
-
+    // $allMissing already computed above for the summary sheet
     $row = 2;
-    if (empty($missingNumbers)) {
+    if (empty($allMissing)) {
         $missingSheet->setCellValue('A2', 'Няма пропуснати номера');
     } else {
-        foreach ($missingNumbers as $missing) {
-            $missingSheet->setCellValue('A' . $row, $missing);
+        foreach ($allMissing as $entry) {
+            $missingSheet->setCellValue('A' . $row, $entry['month']);
+            $missingSheet->setCellValue('B' . $row, $entry['number']);
             $row++;
         }
     }
 
     $missingSheet->getColumnDimension('A')->setAutoSize(true);
+    $missingSheet->getColumnDimension('B')->setAutoSize(true);
 
     // --- Sheet 3: Zero-total invoices ---
     $zeroSheet = $spreadsheet->createSheet();
