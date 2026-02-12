@@ -191,7 +191,7 @@ if ($request->isMethod('POST')) {
 
     try {
         clearProgress();
-        writeProgress(0, 11, 'Стартиране на експорта...');
+        writeProgress(0, 12, 'Стартиране на експорта...');
         $log->appendLog('Export started');
         logMemory($log, 'Export start');
 
@@ -220,7 +220,7 @@ if ($request->isMethod('POST')) {
         $log->appendLog(sprintf('Date range: %s to %s', $startDate->format('Y-m-d'), $endDate->format('Y-m-d')));
 
         // Fetch supporting data
-        writeProgress(1, 11, 'Зареждане на клиенти и настройки...');
+        writeProgress(1, 12, 'Зареждане на клиенти и настройки...');
         $log->appendLog('Fetching clients, payment methods, organizations and service plans...');
         $clients = $api->get('clients');
         $methods = $api->get('payment-methods');
@@ -286,7 +286,7 @@ if ($request->isMethod('POST')) {
         // ============================================
         // PAYMENTS REPORT
         // ============================================
-        writeProgress(2, 11, 'Зареждане на плащания...');
+        writeProgress(2, 12, 'Зареждане на плащания...');
         $log->appendLog('Fetching payments...');
         $payments = $api->get('payments', $dateParams);
         $log->appendLog(sprintf('Found %d payments', count($payments)));
@@ -297,14 +297,14 @@ if ($request->isMethod('POST')) {
         logMemory($log, 'After payments fetch');
 
         // Enrich payments with invoice details
-        writeProgress(3, 11, sprintf('Обработка на %d плащания...', count($payments)));
+        writeProgress(3, 12, sprintf('Обработка на %d плащания...', count($payments)));
         $log->appendLog('Enriching with invoice details...');
         $paymentsWithInvoices = enrichPaymentsWithInvoiceDetails($api, $payments, $log);
 
         // ============================================
         // SALES REPORT (Invoices + Credit Notes)
         // ============================================
-        writeProgress(4, 11, 'Зареждане на фактури...');
+        writeProgress(4, 12, 'Зареждане на фактури...');
         $log->appendLog('Fetching invoices for sales report...');
         $invoiceParams = array_merge($dateParams, ['organizationId' => $organizationId]);
         $invoices = $api->get('invoices', $invoiceParams);
@@ -324,7 +324,7 @@ if ($request->isMethod('POST')) {
         foreach ($invoices as &$invoice) {
             $invoiceIdx++;
             if ($invoiceIdx % 20 === 1 || $invoiceIdx === $invoiceTotal) {
-                writeProgress(5, 11, sprintf('Обработка на фактури: %d / %d ...', $invoiceIdx, $invoiceTotal));
+                writeProgress(5, 12, sprintf('Обработка на фактури: %d / %d ...', $invoiceIdx, $invoiceTotal));
             }
             $invoice['_type'] = 'Фактура';
             $invoice['_docType'] = 1; // Plus-Minus document type for invoice
@@ -339,13 +339,13 @@ if ($request->isMethod('POST')) {
         unset($invoice);
 
         // Fetch credit notes
-        writeProgress(6, 11, 'Зареждане на кредитни известия...');
+        writeProgress(6, 12, 'Зареждане на кредитни известия...');
         $log->appendLog('Fetching credit notes...');
         $creditNotes = $api->get('credit-notes', $invoiceParams);
         $log->appendLog(sprintf('Found %d credit notes', count($creditNotes)));
 
         // Enrich credit notes with items and add document type markers
-        writeProgress(7, 11, sprintf('Обработка на %d кредитни известия...', count($creditNotes)));
+        writeProgress(7, 12, sprintf('Обработка на %d кредитни известия...', count($creditNotes)));
         $log->appendLog('Enriching credit notes with line items...');
         foreach ($creditNotes as &$creditNote) {
             $creditNote['_type'] = 'Кредитно известие';
@@ -389,17 +389,18 @@ if ($request->isMethod('POST')) {
         $pdfLabel = $includePdfs ? 'фактури' : 'нулеви фактури';
         $pdfCount = count($pdfInvoices);
         if ($pdfCount > 0) {
-            writeProgress(8, 11, sprintf('Изтегляне на PDF за %s: 0 / %d ...', $pdfLabel, $pdfCount));
+            writeProgress(8, 12, sprintf('Изтегляне на PDF за %s: 0 / %d ...', $pdfLabel, $pdfCount));
             $log->appendLog(sprintf('Downloading PDFs for %d %s...', $pdfCount, $pdfLabel));
             foreach ($pdfInvoices as $idx => $inv) {
                 if (($idx + 1) % 5 === 1 || ($idx + 1) === $pdfCount) {
-                    writeProgress(8, 11, sprintf('Изтегляне на PDF за %s: %d / %d ...', $pdfLabel, $idx + 1, $pdfCount));
+                    writeProgress(8, 12, sprintf('Изтегляне на PDF за %s: %d / %d ...', $pdfLabel, $idx + 1, $pdfCount));
                 }
                 try {
                     $pdfContent = $api->get('invoices/' . $inv['id'] . '/pdf');
                     $safeNumber = preg_replace('/[^a-zA-Z0-9\-_]/u', '_', $inv['number'] ?? (string)$inv['id']);
                     $pdfPath = $tempDir . '/inv_pdf_' . $inv['id'] . '.pdf';
                     file_put_contents($pdfPath, $pdfContent);
+                    unset($pdfContent);
                     $pdfFiles[] = [
                         'path' => $pdfPath,
                         'name' => $pdfFolder . '/' . $safeNumber . '.pdf',
@@ -427,8 +428,23 @@ if ($request->isMethod('POST')) {
 
         $files = [];
 
+        // Generate Controls Report FIRST (lightweight, doesn't need items)
+        writeProgress(9, 12, 'Генериране на контролен отчет...');
+        $log->appendLog('Generating controls report...');
+        $controlsXlsxPath = $tempDir . '/controls_' . $timestamp . '.xlsx';
+        generateControlsXlsx($controlsXlsxPath, $invoices, $creditNotes, $zeroTotalInvoices, $nonZeroInvoices);
+        $files[] = ['path' => $controlsXlsxPath, 'name' => "controls_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
+
+        // Free invoice items from main arrays (items are only needed in $salesDocuments)
+        foreach ($invoices as &$inv) { unset($inv['items']); }
+        unset($inv);
+        foreach ($creditNotes as &$cn) { unset($cn['items']); }
+        unset($cn);
+        unset($nonZeroInvoices, $nonZeroCreditNotes, $pdfInvoices);
+        logMemory($log, 'After controls report + items cleanup');
+
         // Generate Payments Report
-        writeProgress(9, 11, 'Генериране на отчет за плащания...');
+        writeProgress(10, 12, 'Генериране на отчет за плащания...');
         $log->appendLog('Generating payments reports...');
         $paymentGenerator = new ExportGenerator($clients, $methods, $organizations);
 
@@ -440,10 +456,13 @@ if ($request->isMethod('POST')) {
 
         $files[] = ['path' => $paymentsCsvPath, 'name' => "payments_{$dateFromFormatted}_{$dateToFormatted}.csv"];
         $files[] = ['path' => $paymentsXlsxPath, 'name' => "payments_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
-        logMemory($log, 'After payments report generation');
 
-        // Generate Sales Report
-        writeProgress(10, 11, 'Генериране на отчет за продажби...');
+        // Free payments data
+        unset($paymentsWithInvoices, $payments, $paymentGenerator);
+        logMemory($log, 'After payments report + cleanup');
+
+        // Generate Sales Report (the heaviest — needs items in $salesDocuments)
+        writeProgress(11, 12, 'Генериране на отчет за продажби...');
         $log->appendLog('Generating sales reports...');
         $salesGenerator = new SalesReportGenerator($clients, $api, $serviceLabelMap, $surchargeLabelMap);
 
@@ -451,17 +470,16 @@ if ($request->isMethod('POST')) {
         $salesXlsxPath = $tempDir . '/sales_' . $timestamp . '.xlsx';
 
         $salesGenerator->generateCsvToFile($salesCsvPath, $salesDocuments);
+        // Free data before the heavy XLSX generation
+        unset($clients, $methods, $serviceLabelMap, $surchargeLabelMap);
         $salesGenerator->generateXlsxToFile($salesXlsxPath, $salesDocuments);
 
         $files[] = ['path' => $salesCsvPath, 'name' => "sales_{$dateFromFormatted}_{$dateToFormatted}.csv"];
         $files[] = ['path' => $salesXlsxPath, 'name' => "sales_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
-        logMemory($log, 'After sales report generation');
 
-        // Generate Controls Report
-        $log->appendLog('Generating controls report...');
-        $controlsXlsxPath = $tempDir . '/controls_' . $timestamp . '.xlsx';
-        generateControlsXlsx($controlsXlsxPath, $invoices, $creditNotes, $zeroTotalInvoices, $nonZeroInvoices);
-        $files[] = ['path' => $controlsXlsxPath, 'name' => "controls_{$dateFromFormatted}_{$dateToFormatted}.xlsx"];
+        // Free sales data
+        unset($salesDocuments, $salesGenerator);
+        logMemory($log, 'After sales report + cleanup');
 
         // Add zero-total invoice PDFs to the archive
         $files = array_merge($files, $pdfFiles);
@@ -469,7 +487,7 @@ if ($request->isMethod('POST')) {
         // ============================================
         // CREATE ZIP AND SAVE TO DATA DIR
         // ============================================
-        writeProgress(11, 11, 'Създаване на ZIP архив...');
+        writeProgress(12, 12, 'Създаване на ZIP архив...');
         $log->appendLog('Creating ZIP archive...');
 
         // Sanitize organization name for filename
