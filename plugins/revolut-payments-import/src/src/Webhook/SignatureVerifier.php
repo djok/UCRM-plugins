@@ -22,7 +22,7 @@ final class SignatureVerifier
         string $signingSecret,
         int $nowSeconds,
     ): bool {
-        if ($timestampHeader === '' || $signatureHeader === '' || $signingSecret === '') {
+        if ($rawBody === '' || $timestampHeader === '' || $signatureHeader === '' || $signingSecret === '') {
             return false;
         }
 

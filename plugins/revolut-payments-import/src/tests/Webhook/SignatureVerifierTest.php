@@ -60,5 +60,6 @@ final class SignatureVerifierTest extends TestCase
 
         self::assertFalse($verifier->isValid('{}', '', 'v1=abc', self::SECRET, 1_700_000_010));
         self::assertFalse($verifier->isValid('{}', '1700000000000', '', self::SECRET, 1_700_000_010));
+        self::assertFalse($verifier->isValid('', '1700000000000', 'v1=abc', self::SECRET, 1_700_000_010));
     }
 }
