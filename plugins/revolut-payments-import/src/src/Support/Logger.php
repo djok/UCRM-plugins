@@ -42,7 +42,7 @@ final class Logger
     {
         $patterns = [
             '/(oa_(?:prod|sand)_[A-Za-z0-9_\-]{4})[A-Za-z0-9_\-]+/',
-            '/(wsk_[A-Za-z0-9]{4})[A-Za-z0-9]+/',
+            '/(wsk_[A-Za-z0-9_\-]{4})[A-Za-z0-9_\-]+/',
         ];
 
         return (string) preg_replace($patterns, '$1***', $message);

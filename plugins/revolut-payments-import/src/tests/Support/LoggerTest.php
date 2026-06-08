@@ -22,4 +22,17 @@ final class LoggerTest extends TestCase
         self::assertStringNotContainsString('OmbMAuguhQ', $lines[0]);
         self::assertStringContainsString('INFO', $lines[0]);
     }
+
+    public function testRedactsSigningSecretContainingUnderscoresAndHyphens(): void
+    {
+        $lines = [];
+        $logger = new Logger(function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        });
+
+        $logger->error('signing secret wsk_aB12cd_3-EF_ghIJ-xyz done');
+
+        self::assertStringContainsString('wsk_aB12***', $lines[0]);
+        self::assertStringNotContainsString('cd_3-EF_ghIJ-xyz', $lines[0]);
+    }
 }
