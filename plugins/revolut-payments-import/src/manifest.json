@@ -1,0 +1,82 @@
+{
+    "version": "1",
+    "information": {
+        "name": "revolut-payments-import",
+        "displayName": "Revolut Business Payments Import",
+        "description": "Automatically records incoming Revolut Business bank payments into UCRM via signed webhooks, matching clients by the sender's IBAN.",
+        "url": "https://github.com/djok/UCRM-plugins",
+        "version": "1.0.0",
+        "ucrmVersionCompliancy": {
+            "min": "2.16.0",
+            "max": null
+        },
+        "unmsVersionCompliancy": {
+            "min": "1.0.0-alpha.1",
+            "max": null
+        },
+        "author": "Rosen Velikov"
+    },
+    "configuration": [
+        {
+            "key": "environment",
+            "label": "Environment",
+            "description": "Revolut environment to use.",
+            "required": 1,
+            "type": "choice",
+            "choices": {
+                "Sandbox": "sandbox",
+                "Production": "production"
+            }
+        },
+        {
+            "key": "clientId",
+            "label": "Revolut ClientID",
+            "description": "The ClientID issued by Revolut after you upload the API certificate.",
+            "required": 0,
+            "type": "text"
+        },
+        {
+            "key": "redirectUri",
+            "label": "OAuth redirect URI",
+            "description": "The redirect URI registered with the certificate, e.g. https://your-ucrm.example.com . Its domain becomes the JWT 'iss'.",
+            "required": 0,
+            "type": "text"
+        },
+        {
+            "key": "authCode",
+            "label": "Authorization code (one-time)",
+            "description": "Paste the 'code' value from the redirect URL after authorizing access in Revolut Business. Used once to obtain tokens, then cleared.",
+            "required": 0,
+            "type": "text"
+        },
+        {
+            "key": "refreshToken",
+            "label": "Refresh token (managed)",
+            "description": "Managed automatically. Do not edit.",
+            "required": 0,
+            "type": "text"
+        },
+        {
+            "key": "signingSecret",
+            "label": "Webhook signing secret (managed)",
+            "description": "Managed automatically. Do not edit.",
+            "required": 0,
+            "type": "text"
+        },
+        {
+            "key": "webhookId",
+            "label": "Webhook ID (managed)",
+            "description": "Managed automatically. Do not edit.",
+            "required": 0,
+            "type": "text"
+        },
+        {
+            "key": "paymentMethodName",
+            "label": "UCRM payment method name",
+            "description": "Name of the UCRM payment method to use for imported payments.",
+            "required": 1,
+            "type": "text"
+        }
+    ],
+    "supportsWebhookEvents": false
+}
