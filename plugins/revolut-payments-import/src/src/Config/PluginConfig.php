@@ -89,6 +89,13 @@ final class PluginConfig
         return $value === null ? null : (int) $value;
     }
 
+    public function reconcileFrom(): ?int
+    {
+        $value = $this->get('reconcileFrom');
+
+        return $value === null ? null : (int) $value;
+    }
+
     public function paymentMethodName(): ?string
     {
         return $this->get('paymentMethodName');
