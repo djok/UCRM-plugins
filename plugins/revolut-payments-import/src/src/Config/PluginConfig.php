@@ -77,6 +77,18 @@ final class PluginConfig
         return $this->get('webhookId');
     }
 
+    public function accessToken(): ?string
+    {
+        return $this->get('accessToken');
+    }
+
+    public function accessTokenExpiresAt(): ?int
+    {
+        $value = $this->get('accessTokenExpiresAt');
+
+        return $value === null ? null : (int) $value;
+    }
+
     public function paymentMethodName(): ?string
     {
         return $this->get('paymentMethodName');
