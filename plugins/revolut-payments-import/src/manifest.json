@@ -5,7 +5,7 @@
         "displayName": "Revolut Business Payments Import",
         "description": "Automatically records incoming Revolut Business bank payments into UCRM via signed webhooks, matching clients by the sender's IBAN.",
         "url": "https://github.com/djok/UCRM-plugins",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "ucrmVersionCompliancy": {
             "min": "2.16.0",
             "max": null
@@ -38,7 +38,7 @@
         {
             "key": "redirectUri",
             "label": "OAuth redirect URI",
-            "description": "The redirect URI registered with the certificate, e.g. https://your-ucrm.example.com . Its domain becomes the JWT 'iss'.",
+            "description": "Set this to the plugin's Public URL (the public.php link shown above) and register the SAME value with the certificate in Revolut. The authorization code is then captured automatically — no manual copy. Its domain becomes the JWT 'iss'.",
             "required": 0,
             "type": "text"
         },
