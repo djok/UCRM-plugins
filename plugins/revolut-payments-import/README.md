@@ -43,6 +43,16 @@ plugin log after saving the configuration, and on the plugin's Public URL with
 accounts are ignored. The filter applies to webhooks, reconciliation, and
 backfill alike.
 
+## Statement CSV import (full sender IBANs)
+The Business API does not always expose the sender's IBAN for incoming
+transfers, but Revolut's **account-statement CSV export** always does ("Sender
+account" + "Sender name" columns). Upload the export via the **Account
+statement CSV import** setting and run the plugin — every completed incoming
+row is matched to a client by the sender IBAN (Paysera-grade), recorded with
+its original date, and deduplicated against webhook/reconciliation imports by
+transaction id. The file is processed once and re-processed only when its
+content changes (upload a new export anytime).
+
 ## Importing past payments (backfill)
 Set **Backfill history from date** in the configuration and run the plugin
 (scheduled execution or *execute manually*). It imports all completed incoming

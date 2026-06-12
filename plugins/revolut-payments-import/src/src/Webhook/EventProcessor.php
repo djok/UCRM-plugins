@@ -106,6 +106,12 @@ final class EventProcessor
         }
 
         $sender = $this->resolveSender($leg);
+        if ($sender['iban'] === null) {
+            // Diagnostic: capture what the API actually returns for senders without
+            // a resolvable IBAN, so the field mapping can be extended if Revolut
+            // exposes the remitter elsewhere. Admin-only log; remove once settled.
+            $this->logger->info('DEBUG transaction without sender IBAN: ' . json_encode($transaction, JSON_UNESCAPED_UNICODE));
+        }
         $clientId = $this->matchClient($sender['iban']);
 
         $completedAt = $transaction['completed_at'] ?? $transaction['created_at'] ?? null;
@@ -176,11 +182,12 @@ final class EventProcessor
         }
 
         // Unknown external senders often have no counterparty at all — the leg
-        // description ("Payment from ACME LTD") is then the only sender info.
+        // description ("Payment from ACME LTD" / "Добавени пари от ACME LTD")
+        // is then the only sender info.
         if ($name === null) {
             $description = $leg['description'] ?? null;
             if (is_string($description) && $description !== '') {
-                $name = (string) preg_replace('/^payment from\s+/i', '', $description);
+                $name = (string) preg_replace('/^(payment from|добавени пари от)\s+/iu', '', $description);
             }
         }
 

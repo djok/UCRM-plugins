@@ -13,6 +13,8 @@ use RevolutPaymentsImport\Revolut\CounterpartyApi;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 use RevolutPaymentsImport\Revolut\TransactionsApi;
 use RevolutPaymentsImport\Revolut\WebhooksApi;
+use RevolutPaymentsImport\Statement\StatementCsvParser;
+use RevolutPaymentsImport\Statement\StatementImporter;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\SdkUcrmClient;
@@ -96,6 +98,33 @@ try {
     }
     $config->set('reconcileFrom', (string) ($now - 3600));
     $config->save();
+
+    // 3) Statement CSV import: the statement carries the sender IBAN + name for
+    // every incoming transfer (the API often does not), so an uploaded export
+    // yields Paysera-grade matching. Re-runs only when the file content changes.
+    $statementFile = $config->statementCsv();
+    if ($statementFile !== null) {
+        $path = __DIR__ . '/data/files/' . basename($statementFile);
+        if (is_file($path)) {
+            $content = (string) file_get_contents($path);
+            $hash = md5($content);
+            if ($config->statementDone() !== $hash) {
+                $rows = (new StatementCsvParser())->parse($content);
+                $importer = new StatementImporter(
+                    new ClientMatcher($ucrm),
+                    new UcrmPaymentGateway($ucrm, (string) $config->paymentMethodName()),
+                    new IdempotencyStore(__DIR__ . '/data/processed.json'),
+                    $logger,
+                );
+                $imported = $importer->import($rows);
+                $config->set('statementDone', $hash);
+                $config->save();
+                $logger->info(sprintf('main: statement import — %d row(s) parsed, %d payment(s) imported.', count($rows), $imported));
+            }
+        } else {
+            $logger->error('main: statement file not found: ' . $path);
+        }
+    }
 } catch (\Throwable $e) {
     $logger->error('main: ' . $e->getMessage());
 }

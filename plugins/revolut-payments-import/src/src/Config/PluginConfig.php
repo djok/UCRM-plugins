@@ -106,6 +106,16 @@ final class PluginConfig
         return $this->get('backfillDone');
     }
 
+    public function statementCsv(): ?string
+    {
+        return $this->get('statementCsv');
+    }
+
+    public function statementDone(): ?string
+    {
+        return $this->get('statementDone');
+    }
+
     /**
      * Revolut account ids to import from; empty list = all accounts.
      * Accepts comma/semicolon/whitespace separated input, case-insensitive.
