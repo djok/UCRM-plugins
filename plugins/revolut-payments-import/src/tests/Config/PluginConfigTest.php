@@ -64,4 +64,21 @@ final class PluginConfigTest extends TestCase
         $config = PluginConfig::fromFile($this->path);
         self::assertTrue($config->isSandbox());
     }
+
+    public function testAccountIdsParsesSeparatorsCaseAndDuplicates(): void
+    {
+        file_put_contents($this->path, json_encode([
+            'accountIds' => " Acc-1, acc-2\nACC-1 ;acc-3 ",
+        ]));
+        $config = PluginConfig::fromFile($this->path);
+
+        self::assertSame(['acc-1', 'acc-2', 'acc-3'], $config->accountIds());
+    }
+
+    public function testAccountIdsEmptyWhenUnset(): void
+    {
+        $config = PluginConfig::fromFile($this->path);
+
+        self::assertSame([], $config->accountIds());
+    }
 }

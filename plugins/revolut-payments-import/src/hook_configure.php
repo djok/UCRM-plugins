@@ -8,6 +8,7 @@ use Ubnt\UcrmPluginSdk\Service\UcrmOptionsManager;
 use RevolutPaymentsImport\Auth\JwtClientAssertion;
 use RevolutPaymentsImport\Auth\TokenProvider;
 use RevolutPaymentsImport\Config\PluginConfig;
+use RevolutPaymentsImport\Revolut\AccountsApi;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 use RevolutPaymentsImport\Revolut\WebhooksApi;
 
@@ -83,6 +84,29 @@ if ($config->webhookId() === null) {
 }
 
 $logManager->appendLog('[configure] Setup complete. Incoming Revolut payments will now be imported.');
+
+// List the available accounts so the user can pick ids for "Revolut accounts to import from".
+try {
+    $accessToken = $tokenProvider->getAccessToken();
+    $authedClient = new RevolutClient(new \GuzzleHttp\Client(), $config->environment(), $accessToken);
+    $accounts = (new AccountsApi($authedClient))->listAccounts();
+
+    $selected = $config->accountIds();
+    $logManager->appendLog('[configure] Available Revolut accounts (paste the id(s) into "Revolut accounts to import from"; empty = all):');
+    foreach ($accounts as $account) {
+        $id = (string) ($account['id'] ?? '?');
+        $mark = $selected === [] || in_array(strtolower($id), $selected, true) ? ' [importing]' : '';
+        $logManager->appendLog(sprintf(
+            '  - %s | %s | id: %s%s',
+            (string) ($account['name'] ?? '?'),
+            (string) ($account['currency'] ?? '?'),
+            $id,
+            $mark,
+        ));
+    }
+} catch (\Throwable $e) {
+    $logManager->appendLog('[configure] Could not list accounts: ' . $e->getMessage());
+}
 
 function consentUrl(PluginConfig $config): string
 {

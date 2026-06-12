@@ -21,6 +21,10 @@ final class EventProcessor
 {
     private const INCOMING_TYPES = ['transfer', 'topup'];
 
+    /** @var list<string> lowercase account ids; empty = import from all accounts */
+    private readonly array $allowedAccountIds;
+
+    /** @param list<string> $allowedAccountIds */
     public function __construct(
         private readonly TransactionSource $transactions,
         private readonly CounterpartySource $counterparties,
@@ -28,7 +32,12 @@ final class EventProcessor
         private readonly PaymentRecorder $payments,
         private readonly IdempotencyStore $idempotency,
         private readonly Logger $logger,
+        array $allowedAccountIds = [],
     ) {
+        $this->allowedAccountIds = array_values(array_map(
+            static fn ($id): string => strtolower(trim((string) $id)),
+            $allowedAccountIds,
+        ));
     }
 
     /** @param array<mixed> $event webhook/failed-event envelope */
@@ -84,6 +93,16 @@ final class EventProcessor
             $this->logger->info(sprintf('Transaction %s has no incoming leg; ignored.', $id));
 
             return;
+        }
+
+        if ($this->allowedAccountIds !== []) {
+            $accountId = strtolower((string) ($leg['account_id'] ?? ''));
+            if (! in_array($accountId, $this->allowedAccountIds, true)) {
+                $this->idempotency->markProcessed($id); // terminal: account not selected
+                $this->logger->info(sprintf('Transaction %s on account %s not selected; ignored.', $id, $accountId));
+
+                return;
+            }
         }
 
         $sender = $this->resolveSender($leg);

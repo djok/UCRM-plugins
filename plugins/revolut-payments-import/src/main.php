@@ -53,6 +53,7 @@ try {
         new UcrmPaymentGateway($ucrm, (string) $config->paymentMethodName()),
         new IdempotencyStore(__DIR__ . '/data/processed.json'),
         $logger,
+        $config->accountIds(),
     );
 
     // 1) Replay failed webhook deliveries (21-day window upstream).

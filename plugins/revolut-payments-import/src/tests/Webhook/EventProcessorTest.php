@@ -33,6 +33,7 @@ final class EventProcessorTest extends TestCase
         array $counterparties,
         ?array $matchedClient,
         RecordingRecorder $recorder,
+        array $allowedAccountIds = [],
     ): EventProcessor {
         $txSource = new class($transactions) implements TransactionSource {
             public function __construct(private array $map)
@@ -69,6 +70,7 @@ final class EventProcessorTest extends TestCase
             $recorder,
             new IdempotencyStore($this->storePath),
             new Logger(static fn (string $l) => null),
+            $allowedAccountIds,
         );
     }
 
@@ -83,6 +85,7 @@ final class EventProcessorTest extends TestCase
             'reference' => 'Invoice 2601000519',
             'legs' => [[
                 'leg_id' => 'leg-1',
+                'account_id' => 'acc-main',
                 'amount' => 12.44,
                 'currency' => 'EUR',
                 'counterparty' => ['id' => 'cp-1', 'account_type' => 'external'],
@@ -179,6 +182,38 @@ final class EventProcessorTest extends TestCase
 
         self::assertCount(1, $recorder->records);
         self::assertNull($recorder->records[0]->clientId);
+    }
+
+    public function testSkipsTransactionFromUnselectedAccount(): void
+    {
+        $recorder = new RecordingRecorder();
+        $processor = $this->makeProcessor(
+            ['tx-1' => $this->completedIncoming()], // leg on 'acc-main'
+            [],
+            null,
+            $recorder,
+            ['acc-other'], // only this account is selected
+        );
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-1']]);
+
+        self::assertCount(0, $recorder->records);
+    }
+
+    public function testProcessesTransactionFromSelectedAccount(): void
+    {
+        $recorder = new RecordingRecorder();
+        $processor = $this->makeProcessor(
+            ['tx-1' => $this->completedIncoming()],
+            ['cp-1' => ['id' => 'cp-1', 'name' => 'John', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]],
+            ['id' => 5],
+            $recorder,
+            ['ACC-MAIN'], // case-insensitive match against leg account_id
+        );
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-1']]);
+
+        self::assertCount(1, $recorder->records);
     }
 
     public function testSkipsMissingTransactionId(): void

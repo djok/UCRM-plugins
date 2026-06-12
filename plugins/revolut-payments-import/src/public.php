@@ -6,10 +6,12 @@ require __DIR__ . '/vendor/autoload.php';
 use GuzzleHttp\Client;
 use Ubnt\UcrmPluginSdk\Service\PluginLogManager;
 use Ubnt\UcrmPluginSdk\Service\UcrmOptionsManager;
+use Ubnt\UcrmPluginSdk\Service\UcrmSecurity;
 use RevolutPaymentsImport\Auth\JwtClientAssertion;
 use RevolutPaymentsImport\Auth\TokenProvider;
 use RevolutPaymentsImport\Config\PluginConfig;
 use RevolutPaymentsImport\Matching\ClientMatcher;
+use RevolutPaymentsImport\Revolut\AccountsApi;
 use RevolutPaymentsImport\Revolut\CounterpartyApi;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 use RevolutPaymentsImport\Revolut\TransactionsApi;
@@ -31,6 +33,14 @@ $config = PluginConfig::fromFile(__DIR__ . '/data/config.json');
 // Exchange the code for tokens and register the webhook automatically — no manual copy.
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['code'])) {
     handleOAuthCallback($config, $logger);
+
+    return;
+}
+
+// Admin-only helper page: lists the Revolut accounts so the admin can pick the
+// id(s) for the "Revolut accounts to import from" setting.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['accounts'])) {
+    handleAccountsPage($config, $logger);
 
     return;
 }
@@ -95,6 +105,7 @@ function buildProcessor(PluginConfig $config, Logger $logger): EventProcessor
         new UcrmPaymentGateway($ucrm, (string) $config->paymentMethodName()),
         new IdempotencyStore(__DIR__ . '/data/processed.json'),
         $logger,
+        $config->accountIds(),
     );
 }
 
@@ -160,14 +171,84 @@ function handleOAuthCallback(PluginConfig $config, Logger $logger): void
     }
 }
 
+/**
+ * Lists Revolut accounts to a logged-in UCRM admin (read-only). Anonymous or
+ * client-zone visitors get 403 — the page must not leak account metadata.
+ */
+function handleAccountsPage(PluginConfig $config, Logger $logger): void
+{
+    $user = null;
+    try {
+        $user = UcrmSecurity::create()->getUser();
+    } catch (\Throwable $e) {
+        $user = null;
+    }
+    if ($user === null || $user->isClient) {
+        http_response_code(403);
+        renderHtml('Forbidden', 'Log in to UCRM as an administrator, then reload this page.');
+
+        return;
+    }
+
+    if ($config->refreshToken() === null) {
+        renderHtml('Not connected', 'Finish the Revolut authorization first (see the plugin log), then reload this page.');
+
+        return;
+    }
+
+    try {
+        $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
+        $tokenProvider = new TokenProvider(
+            new RevolutClient(new Client(), $config->environment()),
+            $config,
+            new JwtClientAssertion(),
+            $privateKey,
+            time(),
+        );
+        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
+        $accounts = (new AccountsApi($revolut))->listAccounts();
+
+        $selected = $config->accountIds();
+        $rows = '';
+        foreach ($accounts as $account) {
+            $id = (string) ($account['id'] ?? '');
+            $importing = $selected === [] || in_array(strtolower($id), $selected, true);
+            $rows .= '<tr>'
+                . '<td>' . htmlspecialchars((string) ($account['name'] ?? '?')) . '</td>'
+                . '<td>' . htmlspecialchars((string) ($account['currency'] ?? '?')) . '</td>'
+                . '<td><code>' . htmlspecialchars($id) . '</code></td>'
+                . '<td>' . ($importing ? '&#10003; importing' : '&mdash;') . '</td>'
+                . '</tr>';
+        }
+        $body = '<p>Paste the wanted account id(s), comma-separated, into the plugin setting '
+            . '<strong>&quot;Revolut accounts to import from&quot;</strong> and Save. '
+            . 'Leave the setting empty to import from all accounts.</p>'
+            . '<table border="1" cellpadding="6" style="border-collapse:collapse">'
+            . '<tr><th>Name</th><th>Currency</th><th>Account id</th><th>Status</th></tr>'
+            . $rows
+            . '</table>';
+        renderPage('Revolut accounts', $body);
+    } catch (\Throwable $e) {
+        $logger->error('Accounts page error: ' . $e->getMessage());
+        http_response_code(500);
+        renderHtml('Error', 'Could not load the account list. Check the plugin log in UCRM for details.');
+    }
+}
+
 function renderHtml(string $title, string $message): void
+{
+    renderPage($title, '<p>' . htmlspecialchars($message) . '</p>');
+}
+
+/** @param string $bodyHtml pre-escaped HTML */
+function renderPage(string $title, string $bodyHtml): void
 {
     header('Content-Type: text/html; charset=utf-8');
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         . '<meta name="viewport" content="width=device-width, initial-scale=1">'
         . '<title>' . htmlspecialchars($title) . '</title></head>'
-        . '<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5">'
+        . '<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;line-height:1.5">'
         . '<h2>' . htmlspecialchars($title) . '</h2>'
-        . '<p>' . htmlspecialchars($message) . '</p>'
+        . $bodyHtml
         . '</body></html>';
 }

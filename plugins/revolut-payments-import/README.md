@@ -34,6 +34,15 @@ the UCRM client's bank accounts. If the IBAN is missing or matches no client,
 the payment is recorded **unassigned** (no client) so it can be reconciled
 manually.
 
+## Importing from specific accounts only
+By default the plugin imports incoming transfers from **all** Revolut accounts.
+To restrict it, set **Revolut accounts to import from** to one or more account
+ids (comma-separated). The available accounts and their ids are listed in the
+plugin log after saving the configuration, and on the plugin's Public URL with
+`?accounts=1` (UCRM admin login required). Transfers landing on non-selected
+accounts are ignored. The filter applies to webhooks, reconciliation, and
+backfill alike.
+
 ## Importing past payments (backfill)
 Set **Backfill history from date** in the configuration and run the plugin
 (scheduled execution or *execute manually*). It imports all completed incoming

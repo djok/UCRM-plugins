@@ -106,6 +106,30 @@ final class PluginConfig
         return $this->get('backfillDone');
     }
 
+    /**
+     * Revolut account ids to import from; empty list = all accounts.
+     * Accepts comma/semicolon/whitespace separated input, case-insensitive.
+     *
+     * @return list<string> normalized (lowercase, unique) ids
+     */
+    public function accountIds(): array
+    {
+        $raw = $this->get('accountIds');
+        if ($raw === null) {
+            return [];
+        }
+
+        $ids = [];
+        foreach (preg_split('/[\s,;]+/', $raw) ?: [] as $part) {
+            $part = strtolower(trim($part));
+            if ($part !== '') {
+                $ids[$part] = true;
+            }
+        }
+
+        return array_keys($ids);
+    }
+
     public function paymentMethodName(): ?string
     {
         return $this->get('paymentMethodName');
