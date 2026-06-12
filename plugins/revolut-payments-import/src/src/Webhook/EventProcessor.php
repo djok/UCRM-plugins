@@ -154,22 +154,33 @@ final class EventProcessor
      */
     private function resolveSender(array $leg): array
     {
-        $counterpartyId = $leg['counterparty']['id'] ?? null;
-        if (! is_string($counterpartyId) || $counterpartyId === '') {
-            return ['iban' => null, 'name' => null];
-        }
-
-        $counterparty = $this->counterparties->getCounterparty($counterpartyId);
-        if ($counterparty === null) {
-            return ['iban' => null, 'name' => null];
-        }
-
-        $name = isset($counterparty['name']) ? (string) $counterparty['name'] : null;
+        $name = null;
         $iban = null;
-        foreach ($counterparty['accounts'] ?? [] as $account) {
-            if (! empty($account['iban'])) {
-                $iban = (string) $account['iban'];
-                break;
+
+        $counterpartyId = $leg['counterparty']['id'] ?? null;
+        if (is_string($counterpartyId) && $counterpartyId !== '') {
+            $counterparty = $this->counterparties->getCounterparty($counterpartyId);
+            if ($counterparty !== null) {
+                $name = isset($counterparty['name']) ? (string) $counterparty['name'] : null;
+                // Prefer the IBAN; fall back to a plain account number (matching
+                // normalizes both, and Paysera-style accounts are not IBANs).
+                foreach (['iban', 'account_no'] as $field) {
+                    foreach ($counterparty['accounts'] ?? [] as $account) {
+                        if (! empty($account[$field])) {
+                            $iban = (string) $account[$field];
+                            break 2;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Unknown external senders often have no counterparty at all — the leg
+        // description ("Payment from ACME LTD") is then the only sender info.
+        if ($name === null) {
+            $description = $leg['description'] ?? null;
+            if (is_string($description) && $description !== '') {
+                $name = (string) preg_replace('/^payment from\s+/i', '', $description);
             }
         }
 

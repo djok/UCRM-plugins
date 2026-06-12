@@ -184,6 +184,41 @@ final class EventProcessorTest extends TestCase
         self::assertNull($recorder->records[0]->clientId);
     }
 
+    public function testNoteFallsBackToLegDescriptionWhenCounterpartyUnknown(): void
+    {
+        $recorder = new RecordingRecorder();
+        $tx = $this->completedIncoming();
+        unset($tx['legs'][0]['counterparty']); // unknown external sender — no counterparty at all
+        $tx['legs'][0]['description'] = 'Payment from MEKS EOOD';
+        $processor = $this->makeProcessor(['tx-1' => $tx], [], null, $recorder);
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-1']]);
+
+        self::assertCount(1, $recorder->records);
+        $payment = $recorder->records[0];
+        self::assertNull($payment->clientId);
+        self::assertStringContainsString('MEKS EOOD', $payment->note);
+        self::assertStringContainsString('Invoice 2601000519', $payment->note);
+    }
+
+    public function testFallsBackToCounterpartyAccountNumberWhenIbanMissing(): void
+    {
+        $recorder = new RecordingRecorder();
+        $processor = $this->makeProcessor(
+            ['tx-1' => $this->completedIncoming()],
+            ['cp-1' => ['id' => 'cp-1', 'name' => 'EVO', 'accounts' => [['account_no' => 'EVP5610010009412']]]],
+            ['id' => 9],
+            $recorder,
+        );
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-1']]);
+
+        self::assertCount(1, $recorder->records);
+        $payment = $recorder->records[0];
+        self::assertSame(9, $payment->clientId); // matching got the account number
+        self::assertStringContainsString('EVP5610010009412', $payment->note);
+    }
+
     public function testSkipsTransactionFromUnselectedAccount(): void
     {
         $recorder = new RecordingRecorder();

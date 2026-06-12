@@ -64,5 +64,9 @@ acquirer top-ups) appear as unassigned payments to clean up manually.
 - Revolut access token lives ~40 min; the refresh token is refreshed
   automatically. If refresh ever fails, clear the stored tokens and re-run the
   consent step.
-- If a counterparty has no IBAN (some external senders), matching falls back to
-  unassigned. Consider a future enhancement to also match by payment reference.
+- Revolut exposes the sender's IBAN only when the sender exists as a saved
+  counterparty. For unknown external senders the plugin falls back to the leg
+  description ("Payment from …") for the sender name, and to the counterparty's
+  plain account number when an IBAN is absent — both feed the payment note and
+  the client matching. When none of that is available, the note carries the
+  payment reference only and the payment stays unassigned for manual linking.
