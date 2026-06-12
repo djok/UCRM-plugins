@@ -48,7 +48,12 @@ if ($config->refreshToken() === null) {
         $config->save();
         $logManager->appendLog('[configure] Obtained tokens from authorization code.');
     } catch (\Throwable $e) {
+        // Codes are one-time and expire in ~2 minutes — retrying a failed code on the
+        // next save is pointless, so clear it and ask for a fresh consent instead.
+        $config->set('authCode', null);
+        $config->save();
         $logManager->appendLog('[configure] ERROR exchanging authorization code: ' . $e->getMessage());
+        $logManager->appendLog('[configure] The code was cleared. Run the consent step again to get a fresh one.');
         return;
     }
 }

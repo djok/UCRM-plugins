@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Ucrm;
 
 /**
- * Creates UCRM payments. Resolves the configured payment-method name to its id
+ * Creates UCRM payments. Resolves the configured payment method (by name or id)
  * once and caches it. Mirrors paysera-payments-import's generate_payment(),
  * adding currencyCode and an unassigned (no clientId) fallback.
  */
@@ -14,7 +14,7 @@ final class UcrmPaymentGateway implements PaymentRecorder
 
     public function __construct(
         private readonly UcrmClient $ucrm,
-        private readonly string $methodName,
+        private readonly string $methodNameOrId,
     ) {
     }
 
@@ -39,15 +39,18 @@ final class UcrmPaymentGateway implements PaymentRecorder
             return $this->methodId;
         }
 
+        $wanted = mb_strtolower(trim($this->methodNameOrId));
         foreach ($this->ucrm->get('payment-methods') as $method) {
-            if (
-                isset($method['name'], $method['id'])
-                && mb_strtolower((string) $method['name']) === mb_strtolower($this->methodName)
-            ) {
-                return $this->methodId = (string) $method['id'];
+            if (! isset($method['id'])) {
+                continue;
+            }
+            $id = (string) $method['id'];
+            $name = isset($method['name']) ? mb_strtolower((string) $method['name']) : null;
+            if ($name === $wanted || mb_strtolower($id) === $wanted) {
+                return $this->methodId = $id;
             }
         }
 
-        throw new \RuntimeException(sprintf("UCRM payment method '%s' not found.", $this->methodName));
+        throw new \RuntimeException(sprintf("UCRM payment method '%s' not found.", $this->methodNameOrId));
     }
 }

@@ -5,7 +5,7 @@
         "displayName": "Revolut Business Payments Import",
         "description": "Automatically records incoming Revolut Business bank payments into UCRM via signed webhooks, matching clients by the sender's IBAN.",
         "url": "https://github.com/djok/UCRM-plugins",
-        "version": "1.1.0",
+        "version": "1.1.1",
         "ucrmVersionCompliancy": {
             "min": "2.16.0",
             "max": null
@@ -44,8 +44,8 @@
         },
         {
             "key": "authCode",
-            "label": "Authorization code (one-time)",
-            "description": "Paste the 'code' value from the redirect URL after authorizing access in Revolut Business. Used once to obtain tokens, then cleared.",
+            "label": "Authorization code (manual fallback)",
+            "description": "Normally NOT needed — when the redirect URI points to the plugin's public.php, the code is captured and exchanged automatically. Manual fallback only: paste the 'code' from the redirect URL, then Save. Used once, then cleared.",
             "required": 0,
             "type": "text"
         },
@@ -72,8 +72,8 @@
         },
         {
             "key": "paymentMethodName",
-            "label": "UCRM payment method name",
-            "description": "Name of the UCRM payment method to use for imported payments.",
+            "label": "UCRM payment method (name or ID)",
+            "description": "Name or ID of the UCRM payment method to use for imported payments, e.g. 'Bank transfer'.",
             "required": 1,
             "type": "text"
         }

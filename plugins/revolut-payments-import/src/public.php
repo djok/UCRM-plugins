@@ -130,6 +130,11 @@ function handleOAuthCallback(PluginConfig $config, Logger $logger): void
         // 2) Register the webhook if it is not registered yet.
         if ($config->webhookId() === null) {
             $webhookUrl = (string) (UcrmOptionsManager::create()->loadOptions()->pluginPublicUrl ?? '');
+            if (! str_starts_with($webhookUrl, 'https://')) {
+                throw new \RuntimeException(
+                    'pluginPublicUrl is not an HTTPS URL — configure "Server domain name" in UCRM so Revolut can reach the webhook.'
+                );
+            }
             $accessToken = $tokenProvider->getAccessToken();
             $authedClient = new RevolutClient(new Client(), $config->environment(), $accessToken);
             $webhook = (new WebhooksApi($authedClient))->registerWebhook($webhookUrl);
@@ -148,9 +153,10 @@ function handleOAuthCallback(PluginConfig $config, Logger $logger): void
             'Setup complete. Incoming Revolut payments will now be imported into UCRM. You can close this window.',
         );
     } catch (\Throwable $e) {
+        // public.php is reachable by anyone — never reflect internal error details here.
         $logger->error('OAuth callback error: ' . $e->getMessage());
         http_response_code(500);
-        renderHtml('Setup failed', 'Could not complete setup: ' . $e->getMessage() . '. Check the plugin log for details.');
+        renderHtml('Setup failed', 'Could not complete setup. Check the plugin log in UCRM for details.');
     }
 }
 

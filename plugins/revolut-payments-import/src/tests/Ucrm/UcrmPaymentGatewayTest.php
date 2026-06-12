@@ -65,6 +65,27 @@ final class UcrmPaymentGatewayTest extends TestCase
         self::assertArrayNotHasKey('clientId', $data);
     }
 
+    public function testResolvesMethodByIdToo(): void
+    {
+        $ucrm = $this->ucrm();
+        // The admin pasted the method UUID instead of its name — must still resolve.
+        $gateway = new UcrmPaymentGateway($ucrm, 'uuid-bank');
+
+        $gateway->record(new IncomingPayment(3.5, 'EUR', 7, 'Revolut: note', 'tx-9'));
+
+        self::assertSame('uuid-bank', $ucrm->posted[0]['data']['methodId']);
+    }
+
+    public function testResolvesMethodNameWithSurroundingWhitespace(): void
+    {
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, '  Bank transfer ');
+
+        $gateway->record(new IncomingPayment(1.0, 'EUR', 7, 'n', 'tx-10'));
+
+        self::assertSame('uuid-bank', $ucrm->posted[0]['data']['methodId']);
+    }
+
     public function testThrowsWhenMethodNameNotFound(): void
     {
         $ucrm = $this->ucrm();
