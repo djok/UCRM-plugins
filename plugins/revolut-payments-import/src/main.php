@@ -19,6 +19,7 @@ use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\SdkUcrmClient;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
+use RevolutPaymentsImport\Ucrm\UcrmPaymentLookup;
 use RevolutPaymentsImport\Webhook\EventProcessor;
 
 chdir(__DIR__);
@@ -113,6 +114,7 @@ try {
                 $importer = new StatementImporter(
                     new ClientMatcher($ucrm),
                     new UcrmPaymentGateway($ucrm, (string) $config->paymentMethodName()),
+                    new UcrmPaymentLookup($ucrm),
                     new IdempotencyStore(__DIR__ . '/data/processed.json'),
                     $logger,
                 );

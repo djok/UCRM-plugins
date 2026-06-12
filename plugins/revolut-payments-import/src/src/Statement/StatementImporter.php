@@ -7,6 +7,7 @@ use RevolutPaymentsImport\Matching\ClientRepository;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\IncomingPayment;
+use RevolutPaymentsImport\Ucrm\PaymentLookup;
 use RevolutPaymentsImport\Ucrm\PaymentRecorder;
 
 /**
@@ -21,6 +22,7 @@ final class StatementImporter
     public function __construct(
         private readonly ClientRepository $clients,
         private readonly PaymentRecorder $payments,
+        private readonly PaymentLookup $existingPayments,
         private readonly IdempotencyStore $idempotency,
         private readonly Logger $logger,
     ) {
@@ -40,6 +42,25 @@ final class StatementImporter
 
             $client = $row['senderIban'] !== '' ? $this->clients->findClientByIban($row['senderIban']) : null;
             $clientId = isset($client['id']) ? (int) $client['id'] : null;
+
+            // Manually entered payments guard: if the matched client already has a
+            // payment of the same amount on the same day (entered by hand before
+            // the integration), skip the row instead of duplicating it.
+            if ($clientId !== null && $row['date'] !== ''
+                && $this->existingPayments->clientHasPaymentOn($clientId, $row['date'], $row['amount'])
+            ) {
+                $this->idempotency->markProcessed($row['id']);
+                $this->logger->info(sprintf(
+                    'Statement import: %s skipped — client %d already has a %.2f %s payment on %s (manual entry).',
+                    $row['id'],
+                    $clientId,
+                    $row['amount'],
+                    $row['currency'],
+                    $row['date'],
+                ));
+
+                continue;
+            }
 
             $noteParts = array_filter([
                 $row['senderName'] !== '' ? $row['senderName'] : null,

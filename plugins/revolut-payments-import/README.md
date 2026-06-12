@@ -53,6 +53,13 @@ its original date, and deduplicated against webhook/reconciliation imports by
 transaction id. The file is processed once and re-processed only when its
 content changes (upload a new export anytime).
 
+**Manually entered payments are not duplicated:** when the matched client
+already has a payment of the same amount on the same day (entered by hand
+before the integration), the row is skipped and logged. Note the trade-off:
+two genuinely separate equal-amount payments from the same client on the same
+day would also be skipped — check the log lines for `skipped — client already
+has` and add such payments manually if they ever occur.
+
 ## Importing past payments (backfill)
 Set **Backfill history from date** in the configuration and run the plugin
 (scheduled execution or *execute manually*). It imports all completed incoming

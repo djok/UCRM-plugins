@@ -5,7 +5,7 @@
         "displayName": "Revolut Business Payments Import",
         "description": "Automatically records incoming Revolut Business bank payments into UCRM via signed webhooks, matching clients by the sender's IBAN.",
         "url": "https://github.com/djok/UCRM-plugins",
-        "version": "1.4.0",
+        "version": "1.5.0",
         "ucrmVersionCompliancy": {
             "min": "2.16.0",
             "max": null

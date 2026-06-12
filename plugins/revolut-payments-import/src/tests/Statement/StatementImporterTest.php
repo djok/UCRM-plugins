@@ -9,6 +9,7 @@ use RevolutPaymentsImport\Statement\StatementImporter;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\IncomingPayment;
+use RevolutPaymentsImport\Ucrm\PaymentLookup;
 use RevolutPaymentsImport\Ucrm\PaymentRecorder;
 
 final class StatementImporterTest extends TestCase
@@ -25,8 +26,8 @@ final class StatementImporterTest extends TestCase
         @unlink($this->storePath);
     }
 
-    /** @return array{0:StatementImporter,1:CapturingRecorder,2:IdempotencyStore} */
-    private function makeImporter(?array $matchedClient): array
+    /** @return array{0:StatementImporter,1:CapturingRecorder,2:IdempotencyStore,3:CountingLookup} */
+    private function makeImporter(?array $matchedClient, bool $existingPayment = false): array
     {
         $clients = new class($matchedClient) implements ClientRepository {
             /** @var list<string> */
@@ -45,9 +46,10 @@ final class StatementImporterTest extends TestCase
         };
         $recorder = new CapturingRecorder();
         $store = new IdempotencyStore($this->storePath);
-        $importer = new StatementImporter($clients, $recorder, $store, new Logger(static fn (string $l) => null));
+        $lookup = new CountingLookup($existingPayment);
+        $importer = new StatementImporter($clients, $recorder, $lookup, $store, new Logger(static fn (string $l) => null));
 
-        return [$importer, $recorder, $store];
+        return [$importer, $recorder, $store, $lookup];
     }
 
     /** @return array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string} */
@@ -93,12 +95,43 @@ final class StatementImporterTest extends TestCase
 
     public function testUnmatchedIbanImportsUnassigned(): void
     {
-        [$importer, $recorder] = $this->makeImporter(null);
+        [$importer, $recorder, , $lookup] = $this->makeImporter(null);
 
         $imported = $importer->import([$this->row('st-2')]);
 
         self::assertSame(1, $imported);
         self::assertNull($recorder->records[0]->clientId);
+        // No client → the manual-payment check cannot apply.
+        self::assertSame(0, $lookup->calls);
+    }
+
+    public function testSkipsRowWhenClientAlreadyHasSameAmountPaymentThatDay(): void
+    {
+        [$importer, $recorder, $store, $lookup] = $this->makeImporter(['id' => 42], existingPayment: true);
+
+        $imported = $importer->import([$this->row('st-3')]);
+
+        self::assertSame(0, $imported);
+        self::assertCount(0, $recorder->records);
+        self::assertSame(1, $lookup->calls);
+        // Decision is final — the row must not come back on a re-run.
+        self::assertTrue($store->isProcessed('st-3'));
+    }
+}
+
+final class CountingLookup implements PaymentLookup
+{
+    public int $calls = 0;
+
+    public function __construct(private readonly bool $exists)
+    {
+    }
+
+    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount): bool
+    {
+        $this->calls++;
+
+        return $this->exists;
     }
 }
 
