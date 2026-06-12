@@ -96,6 +96,16 @@ final class PluginConfig
         return $value === null ? null : (int) $value;
     }
 
+    public function backfillFrom(): ?string
+    {
+        return $this->get('backfillFrom');
+    }
+
+    public function backfillDone(): ?string
+    {
+        return $this->get('backfillDone');
+    }
+
     public function paymentMethodName(): ?string
     {
         return $this->get('paymentMethodName');

@@ -79,6 +79,7 @@ final class EventProcessorTest extends TestCase
             'id' => 'tx-1',
             'type' => 'transfer',
             'state' => 'completed',
+            'completed_at' => '2026-02-03T10:15:00Z',
             'reference' => 'Invoice 2601000519',
             'legs' => [[
                 'leg_id' => 'leg-1',
@@ -107,6 +108,7 @@ final class EventProcessorTest extends TestCase
         self::assertSame('EUR', $payment->currencyCode);
         self::assertSame(77, $payment->clientId);
         self::assertSame('tx-1', $payment->externalId);
+        self::assertSame('2026-02-03T10:15:00Z', $payment->createdDate);
         self::assertStringContainsString('John Doe', $payment->note);
         self::assertStringContainsString('Invoice 2601000519', $payment->note);
     }

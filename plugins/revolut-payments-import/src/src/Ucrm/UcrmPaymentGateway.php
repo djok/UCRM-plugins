@@ -29,6 +29,9 @@ final class UcrmPaymentGateway implements PaymentRecorder
         if ($payment->clientId !== null) {
             $data['clientId'] = $payment->clientId;
         }
+        if ($payment->createdDate !== null) {
+            $data['createdDate'] = $payment->createdDate;
+        }
 
         $this->ucrm->post('payments', $data);
     }

@@ -65,6 +65,18 @@ final class UcrmPaymentGatewayTest extends TestCase
         self::assertArrayNotHasKey('clientId', $data);
     }
 
+    public function testIncludesCreatedDateWhenProvided(): void
+    {
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, 'Bank transfer');
+
+        $gateway->record(new IncomingPayment(9.99, 'EUR', 1, 'n', 'tx-d', '2026-02-03T10:15:00Z'));
+        $gateway->record(new IncomingPayment(9.99, 'EUR', 1, 'n', 'tx-e'));
+
+        self::assertSame('2026-02-03T10:15:00Z', $ucrm->posted[0]['data']['createdDate']);
+        self::assertArrayNotHasKey('createdDate', $ucrm->posted[1]['data']);
+    }
+
     public function testResolvesMethodByIdToo(): void
     {
         $ucrm = $this->ucrm();

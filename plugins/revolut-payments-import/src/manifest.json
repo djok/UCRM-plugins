@@ -5,7 +5,7 @@
         "displayName": "Revolut Business Payments Import",
         "description": "Automatically records incoming Revolut Business bank payments into UCRM via signed webhooks, matching clients by the sender's IBAN.",
         "url": "https://github.com/djok/UCRM-plugins",
-        "version": "1.1.1",
+        "version": "1.2.0",
         "ucrmVersionCompliancy": {
             "min": "2.16.0",
             "max": null
@@ -69,6 +69,13 @@
             "description": "Managed automatically. Do not edit.",
             "required": 0,
             "type": "text"
+        },
+        {
+            "key": "backfillFrom",
+            "label": "Backfill history from date (optional)",
+            "description": "One-time import of past incoming payments starting from this date. Runs on the next scheduled execution (or 'execute manually'), keeps each payment's original date, never duplicates. Clears itself logically once done; change the date to backfill again.",
+            "required": 0,
+            "type": "date"
         },
         {
             "key": "paymentMethodName",

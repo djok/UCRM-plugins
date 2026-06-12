@@ -89,12 +89,14 @@ final class EventProcessor
         $sender = $this->resolveSender($leg);
         $clientId = $this->matchClient($sender['iban']);
 
+        $completedAt = $transaction['completed_at'] ?? $transaction['created_at'] ?? null;
         $payment = new IncomingPayment(
             amount: (float) $leg['amount'],
             currencyCode: (string) ($leg['currency'] ?? ''),
             clientId: $clientId,
             note: $this->buildNote($sender, (string) ($transaction['reference'] ?? '')),
             externalId: $id,
+            createdDate: is_string($completedAt) && $completedAt !== '' ? $completedAt : null,
         );
         $this->payments->record($payment);
         $this->idempotency->markProcessed($id);

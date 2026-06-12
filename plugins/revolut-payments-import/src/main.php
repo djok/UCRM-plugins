@@ -68,16 +68,31 @@ try {
     // 2) Reconcile recent transactions (safety net for missed webhooks).
     $now = time();
     $fromTs = $config->reconcileFrom() ?? ($now - 7 * 24 * 3600);
+
+    // One-time historical backfill: when a "Backfill from date" is set and not yet
+    // done, widen the window back to that date. Idempotency keeps re-runs safe.
+    $backfillFrom = $config->backfillFrom();
+    $backfillTs = $backfillFrom !== null ? strtotime($backfillFrom) : false;
+    $usingBackfill = is_int($backfillTs) && $backfillTs < $fromTs && $config->backfillDone() !== $backfillFrom;
+    if ($usingBackfill) {
+        $fromTs = $backfillTs;
+        $logger->info(sprintf('main: backfilling history from %s.', (string) $backfillFrom));
+    }
+
     $fromIso = gmdate('Y-m-d\TH:i:s\Z', $fromTs);
     $toIso = gmdate('Y-m-d\TH:i:s\Z', $now);
 
-    $transactions = $transactionsApi->listTransactions($fromIso, $toIso, 1000);
+    $transactions = $transactionsApi->listAllTransactions($fromIso, $toIso);
     foreach ($transactions as $transaction) {
         $processor->processTransaction($transaction);
     }
     $logger->info(sprintf('main: reconciled %d transaction(s) in [%s, %s].', count($transactions), $fromIso, $toIso));
 
     // Advance the reconcile cursor with a 1h overlap (dedupe keeps it safe).
+    if ($usingBackfill) {
+        $config->set('backfillDone', $backfillFrom);
+        $logger->info('main: backfill complete — it will not run again unless the date is changed.');
+    }
     $config->set('reconcileFrom', (string) ($now - 3600));
     $config->save();
 } catch (\Throwable $e) {
