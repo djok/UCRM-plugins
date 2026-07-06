@@ -145,6 +145,14 @@ final class PluginConfig
         return $this->get('paymentMethodName');
     }
 
+    /** Sender-identity learning from statement imports; enabled unless explicitly off. */
+    public function learnSenders(): bool
+    {
+        $value = $this->values['learnSenders'] ?? null;
+
+        return ! in_array($value, [false, 0, '0', 'false'], true);
+    }
+
     public function set(string $key, ?string $value): void
     {
         $this->values[$key] = $value;

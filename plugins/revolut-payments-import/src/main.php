@@ -15,8 +15,12 @@ use RevolutPaymentsImport\Revolut\TransactionsApi;
 use RevolutPaymentsImport\Revolut\WebhooksApi;
 use RevolutPaymentsImport\Statement\StatementCsvParser;
 use RevolutPaymentsImport\Statement\StatementImporter;
+use RevolutPaymentsImport\Statement\StatementReMatcher;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
+use RevolutPaymentsImport\Ucrm\ClientAccountLearner;
+use RevolutPaymentsImport\Ucrm\PaymentFinder;
+use RevolutPaymentsImport\Ucrm\PaymentUpdater;
 use RevolutPaymentsImport\Ucrm\SdkUcrmClient;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentLookup;
@@ -111,12 +115,22 @@ try {
             $hash = md5($content);
             if ($config->statementDone() !== $hash) {
                 $rows = (new StatementCsvParser())->parse($content);
+                $ucrmPayments = new PaymentFinder($ucrm);
+                $reMatcher = new StatementReMatcher(
+                    $ucrmPayments,
+                    new PaymentUpdater($ucrm),
+                    new ClientMatcher($ucrm),
+                    new ClientAccountLearner($ucrm, $logger),
+                    $logger,
+                    $config->learnSenders(),
+                );
                 $importer = new StatementImporter(
                     new ClientMatcher($ucrm),
                     new UcrmPaymentGateway($ucrm, (string) $config->paymentMethodName()),
                     new UcrmPaymentLookup($ucrm),
                     new IdempotencyStore(__DIR__ . '/data/processed.json'),
                     $logger,
+                    $reMatcher,
                 );
                 $imported = $importer->import($rows);
                 $config->set('statementDone', $hash);

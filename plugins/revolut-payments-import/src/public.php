@@ -90,11 +90,6 @@ if (! $verifier->isValid($rawBody, (string) $timestamp, (string) $signature, $si
     return;
 }
 
-// Diagnostic (v1.7.1): keep the authentic raw payload in the plugin log so
-// what Revolut *sends* can be compared against what GET /transaction returns
-// (sender-IBAN investigation). Remove once the question is settled.
-$logger->info('Webhook raw payload: ' . $rawBody);
-
 $event = json_decode($rawBody, true);
 if (! is_array($event)) {
     $logger->error('Webhook body is not valid JSON.');

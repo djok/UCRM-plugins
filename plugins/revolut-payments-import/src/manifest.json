@@ -5,7 +5,7 @@
         "displayName": "Revolut Business Payments Import",
         "description": "Automatically records incoming Revolut Business bank payments into UCRM via signed webhooks, matching clients by the sender's IBAN.",
         "url": "https://github.com/djok/UCRM-plugins",
-        "version": "1.7.1",
+        "version": "1.8.0",
         "ucrmVersionCompliancy": {
             "min": "2.16.0",
             "max": null
@@ -98,6 +98,13 @@
             "description": "Upload a Revolut account-statement CSV export. The statement carries the sender IBAN and name for every incoming transfer, so payments are matched to clients like in the Paysera plugin. Processed on the next execution; already-imported transactions are skipped; re-runs only when the file changes.",
             "required": 0,
             "type": "file"
+        },
+        {
+            "key": "learnSenders",
+            "label": "Learn sender identities from statement import",
+            "description": "When the statement CSV recognizes a client by sender IBAN, store that IBAN and the sender name on the client's bank accounts so future webhook payments (which carry no IBAN) are matched by sender name automatically. Enabled unless unchecked.",
+            "required": 0,
+            "type": "checkbox"
         },
         {
             "key": "paymentMethodName",

@@ -26,6 +26,15 @@ final class PluginConfigTest extends TestCase
         @unlink($this->path);
     }
 
+    /** @param array<string,mixed> $values */
+    private function config(array $values): PluginConfig
+    {
+        $path = sys_get_temp_dir() . '/revolut-cfg-' . uniqid() . '.json';
+        file_put_contents($path, json_encode($values));
+
+        return PluginConfig::fromFile($path);
+    }
+
     public function testReadsScalarValues(): void
     {
         $config = PluginConfig::fromFile($this->path);
@@ -80,5 +89,14 @@ final class PluginConfigTest extends TestCase
         $config = PluginConfig::fromFile($this->path);
 
         self::assertSame([], $config->accountIds());
+    }
+
+    public function testLearnSendersDefaultsOnAndHonorsExplicitOff(): void
+    {
+        self::assertTrue($this->config([])->learnSenders());
+        self::assertTrue($this->config(['learnSenders' => true])->learnSenders());
+        self::assertTrue($this->config(['learnSenders' => '1'])->learnSenders());
+        self::assertFalse($this->config(['learnSenders' => false])->learnSenders());
+        self::assertFalse($this->config(['learnSenders' => '0'])->learnSenders());
     }
 }
