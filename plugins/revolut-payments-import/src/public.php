@@ -50,8 +50,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['accounts']))
 }
 
 // Admin-only status page: monthly reconciliation overview — every incoming
-// Revolut transfer of the selected month with its UISP payment status.
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['status'])) {
+// Revolut transfer of the selected month with its UISP payment status. It is
+// the default GET page so the UISP menu item (manifest "menu", iframe target)
+// can open public.php without query parameters; webhooks arrive as POST.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
     handleStatusPage($config, $logger);
 
     return;
@@ -254,6 +256,13 @@ function handleAccountsPage(PluginConfig $config, Logger $logger): void
  */
 function handleStatusPage(PluginConfig $config, Logger $logger): void
 {
+    $crmUrl = '';
+    try {
+        $crmUrl = rtrim((string) (UcrmOptionsManager::create()->loadOptions()->ucrmPublicUrl ?? ''), '/');
+    } catch (\Throwable $e) {
+        $crmUrl = '';
+    }
+
     $user = null;
     try {
         $user = UcrmSecurity::create()->getUser();
@@ -262,13 +271,13 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
     }
     if ($user === null || $user->isClient) {
         http_response_code(403);
-        renderHtml('Забранен достъп', 'Влезте в UISP като администратор и презаредете страницата.');
+        renderUispPage('Забранен достъп', '<p>Влезте в UISP като администратор и презаредете страницата.</p>', $crmUrl);
 
         return;
     }
 
     if ($config->refreshToken() === null) {
-        renderHtml('Не е свързано', 'Първо завършете оторизацията към Revolut (вижте лога на плъгина), после презаредете страницата.');
+        renderUispPage('Не е свързано', '<p>Първо завършете оторизацията към Revolut (вижте лога на плъгина), после презаредете страницата.</p>', $crmUrl);
 
         return;
     }
@@ -296,18 +305,17 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
         $rows = $report->build($transactions, $payments, [$store, 'isProcessed']);
         $summary = $report->summarize($rows);
         $clientNames = fetchClientNames($ucrm, $rows);
-        $crmUrl = rtrim((string) (UcrmOptionsManager::create()->loadOptions()->ucrmPublicUrl ?? ''), '/');
 
-        renderPage(
+        renderUispPage(
             'Revolut преводи — ' . monthLabelBg($window->ym),
             renderStatusBody($rows, $summary, $window, $clientNames, $crmUrl),
-            '75rem',
+            $crmUrl,
         );
     } catch (\Throwable $e) {
         // Never reflect internals on a public endpoint.
         $logger->error('Status page error: ' . $e->getMessage());
         http_response_code(500);
-        renderHtml('Грешка', 'Справката не можа да бъде заредена. Проверете лога на плъгина в UISP.');
+        renderUispPage('Грешка', '<p>Справката не можа да бъде заредена. Проверете лога на плъгина в UISP.</p>', $crmUrl);
     }
 }
 
@@ -394,10 +402,10 @@ function monthLabelBg(string $ym): string
 function renderStatusBody(array $rows, array $summary, MonthWindow $window, array $clientNames, string $crmUrl): string
 {
     $statusMeta = [
-        StatusRow::STATUS_ASSIGNED => ['✅ Разнесен', '#e6f4ea'],
-        StatusRow::STATUS_UNASSIGNED => ['⚠️ Записан без клиент', '#fef7e0'],
-        StatusRow::STATUS_SKIPPED => ['⏭ Пропуснат (ръчно плащане)', '#e8eaed'],
-        StatusRow::STATUS_MISSING => ['❌ Липсва', '#fce8e6'],
+        StatusRow::STATUS_ASSIGNED => ['✅ Разнесен', 'success'],
+        StatusRow::STATUS_UNASSIGNED => ['⚠️ Записан без клиент', 'warning'],
+        StatusRow::STATUS_SKIPPED => ['⏭ Пропуснат (ръчно плащане)', 'secondary'],
+        StatusRow::STATUS_MISSING => ['❌ Липсва', 'danger'],
     ];
 
     $options = '';
@@ -407,21 +415,23 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
             . htmlspecialchars(monthLabelBg($ym)) . '</option>';
     }
     $previousYm = MonthWindow::lastMonths(2, time())[1];
-    $html = '<form method="get" style="margin-bottom:1rem">'
+    $html = '<div class="card mb-3"><div class="card-body py-2">'
+        . '<form method="get" class="form-inline">'
         . '<input type="hidden" name="status" value="1">'
-        . '<label>Месец: <select name="month">' . $options . '</select></label> '
-        . '<button type="submit">Покажи</button>'
-        . ' &nbsp; <a href="?status=1">Текущ месец</a> · '
-        . '<a href="?status=1&amp;month=' . htmlspecialchars($previousYm) . '">Предходен месец</a>'
-        . '</form>';
+        . '<label class="mr-2 mb-0" for="frm-month"><small>Месец:</small></label>'
+        . '<select name="month" id="frm-month" class="form-control form-control-sm mr-2">' . $options . '</select>'
+        . '<button type="submit" class="btn btn-primary btn-sm">Покажи</button>'
+        . '<span class="ml-3"><a href="?status=1">Текущ месец</a> · '
+        . '<a href="?status=1&amp;month=' . htmlspecialchars($previousYm) . '">Предходен месец</a></span>'
+        . '</form></div></div>';
 
-    $html .= '<p>';
-    foreach ($statusMeta as $status => [$label, $color]) {
+    $html .= '<p class="mb-3">';
+    foreach ($statusMeta as $status => [$label, $badge]) {
         $amounts = [];
         foreach ($summary[$status]['amounts'] as $currency => $sum) {
             $amounts[] = number_format($sum, 2, '.', ' ') . ' ' . $currency;
         }
-        $html .= '<span style="background:' . $color . ';padding:2px 8px;border-radius:4px;margin-right:.5rem;display:inline-block;margin-bottom:.25rem">'
+        $html .= '<span class="badge badge-' . $badge . ' mr-2 mb-1">'
             . htmlspecialchars($label) . ': <strong>' . $summary[$status]['count'] . '</strong>'
             . ($amounts !== [] ? ' (' . htmlspecialchars(implode(', ', $amounts)) . ')' : '')
             . '</span>';
@@ -429,22 +439,23 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
     $html .= '</p>';
 
     if ($rows === []) {
-        return $html . '<p>Няма входящи Revolut преводи за избрания месец.</p>';
+        return $html . '<div class="card"><div class="card-body">Няма входящи Revolut преводи за избрания месец.</div></div>';
     }
 
     $cells = '';
     foreach ($rows as $row) {
-        [$label, $color] = $statusMeta[$row->status];
+        [$label, $badge] = $statusMeta[$row->status];
         $client = '&mdash;';
         if ($row->clientId !== null) {
             $name = htmlspecialchars($clientNames[$row->clientId] ?? ('#' . $row->clientId));
+            // target=_top: open the client in the main window, not inside the menu iframe.
             $client = $crmUrl !== ''
-                ? '<a href="' . htmlspecialchars($crmUrl . '/client/' . $row->clientId) . '">' . $name . '</a>'
+                ? '<a href="' . htmlspecialchars($crmUrl . '/client/' . $row->clientId) . '" target="_top">' . $name . '</a>'
                 : $name;
         }
-        $cells .= '<tr style="background:' . $color . '">'
+        $cells .= '<tr class="table-' . $badge . '">'
             . '<td>' . htmlspecialchars($row->date) . '</td>'
-            . '<td style="text-align:right">' . number_format($row->amount, 2, '.', ' ') . '</td>'
+            . '<td class="text-right">' . number_format($row->amount, 2, '.', ' ') . '</td>'
             . '<td>' . htmlspecialchars($row->currency) . '</td>'
             . '<td>' . htmlspecialchars($row->sender) . '</td>'
             . '<td>' . htmlspecialchars($row->reference) . '</td>'
@@ -452,12 +463,45 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
             . '<td>' . $client . '</td>'
             . '</tr>';
     }
-    $html .= '<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">'
-        . '<tr><th>Дата</th><th>Сума</th><th>Валута</th><th>Подател</th><th>Основание</th><th>Статус</th><th>Клиент</th></tr>'
-        . $cells
-        . '</table>';
+    $html .= '<div class="card"><div class="card-body p-0"><table class="table table-sm table-hover mb-0">'
+        . '<thead class="thead-light"><tr><th>Дата</th><th class="text-right">Сума</th><th>Валута</th>'
+        . '<th>Подател</th><th>Основание</th><th>Статус</th><th>Клиент</th></tr></thead>'
+        . '<tbody>' . $cells . '</tbody>'
+        . '</table></div></div>';
 
     return $html;
+}
+
+/**
+ * UISP-look shell for the status page, mirroring the revenue-report plugin:
+ * Lato from the UISP assets, Bootstrap 4 and the UISP header/background, so
+ * the page blends in when opened in the admin UI iframe (manifest "menu").
+ *
+ * @param string $bodyHtml pre-escaped HTML
+ */
+function renderUispPage(string $title, string $bodyHtml, string $ucrmPublicUrl): void
+{
+    $latoCss = $ucrmPublicUrl !== ''
+        ? '<link rel="stylesheet" href="' . htmlspecialchars($ucrmPublicUrl . '/assets/fonts/lato/lato.css') . '">'
+        : '';
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!doctype html><html lang="bg"><head><meta charset="utf-8">'
+        . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        . '<title>' . htmlspecialchars($title) . '</title>'
+        . $latoCss
+        . '<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous">'
+        . '<style>'
+        . '*{font-family:Lato,"Helvetica Neue",Helvetica,Arial,sans-serif}'
+        . 'body{background-color:#edf0f3;-webkit-font-smoothing:antialiased}'
+        . 'h1{margin:0;color:#4c4c4c;font-size:22px;line-height:1.2;font-weight:300}'
+        . '#header{display:block;margin:0;background:#fff;box-shadow:0 0 1px 0 rgba(0,0,0,.1);padding:15px 32px}'
+        . '#content{padding:18px 32px 32px}'
+        . '.badge{font-size:.85rem;font-weight:400;padding:.4em .6em}'
+        . '</style></head><body>'
+        . '<div id="header"><h1>' . htmlspecialchars($title) . '</h1></div>'
+        . '<div id="content">'
+        . $bodyHtml
+        . '</div></body></html>';
 }
 
 function renderHtml(string $title, string $message): void
@@ -466,13 +510,13 @@ function renderHtml(string $title, string $message): void
 }
 
 /** @param string $bodyHtml pre-escaped HTML */
-function renderPage(string $title, string $bodyHtml, string $maxWidth = '40rem'): void
+function renderPage(string $title, string $bodyHtml): void
 {
     header('Content-Type: text/html; charset=utf-8');
     echo '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         . '<meta name="viewport" content="width=device-width, initial-scale=1">'
         . '<title>' . htmlspecialchars($title) . '</title></head>'
-        . '<body style="font-family:system-ui,sans-serif;max-width:' . htmlspecialchars($maxWidth) . ';margin:4rem auto;padding:0 1rem;line-height:1.5">'
+        . '<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;line-height:1.5">'
         . '<h2>' . htmlspecialchars($title) . '</h2>'
         . $bodyHtml
         . '</body></html>';

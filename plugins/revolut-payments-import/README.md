@@ -44,10 +44,12 @@ accounts are ignored. The filter applies to webhooks, reconciliation, and
 backfill alike.
 
 ## Monthly status page (reconciliation overview)
-Open the plugin's Public URL with `?status=1` (UCRM admin login required) to
-see every incoming Revolut transfer for a selected month — current by default,
-any of the last 12 via the dropdown (`&month=YYYY-MM`) — with its status in
-UCRM/UISP:
+Open **Reporting → Revolut payments** in the UISP main menu (since v1.7.0 the
+plugin registers a menu item and the page renders in the UISP look inside the
+admin UI), or open the plugin's Public URL directly — the status page is its
+default GET page; `?month=YYYY-MM` selects a month. UCRM admin login required.
+The page shows every incoming Revolut transfer for a selected month — current
+by default, any of the last 12 via the dropdown — with its status in UCRM/UISP:
 - ✅ recorded and attached to a client (linked),
 - ⚠️ recorded but unassigned (waiting for manual attachment),
 - ⏭ skipped by the manual-payment duplicate guard,

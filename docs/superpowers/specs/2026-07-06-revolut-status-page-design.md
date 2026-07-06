@@ -107,3 +107,25 @@ Above the table: summary — count and amount per status, per currency.
 
 Manifest version 1.6.0; README section "Monthly status page"; rebuild
 `revolut-payments-import.zip` (repo convention).
+
+## Amendment (2026-07-06, v1.7.0 — user-requested after v1.6.1)
+
+The page is reachable from the UISP main menu and looks native (pattern:
+`revenue-report` plugin):
+
+- `manifest.json` gains `"menu": [{key: "Reports", label: "Revolut payments",
+  type: "admin", target: "iframe"}]` — UISP shows the link in the Reporting
+  section and opens `public.php` in an iframe inside the admin UI.
+- The menu opens the URL without query parameters, so the status page became
+  the **default GET page** of `public.php` (`?status=1` still works; OAuth
+  `?code` and `?accounts` branches take precedence; webhooks are POST).
+- Rendering switched to a UISP-look shell (`renderUispPage`): Lato from the
+  UISP assets, Bootstrap 4.1.3 CDN (same tag as revenue-report), UISP-style
+  header bar and `#edf0f3` background; summary as Bootstrap badges, table as
+  `table table-sm table-hover` with `table-success/warning/secondary/danger`
+  rows. Client links use `target="_top"` to escape the iframe. Error pages of
+  the status flow use the same shell.
+- v1.6.1 (interim hotfix, same day): `UcrmPaymentGateway` normalizes
+  `createdDate` to second-precision UTC — UISP rejects the microsecond
+  timestamps Revolut sends in webhook `completed_at` (400 Invalid datetime),
+  which had silently blocked all live webhook payments since 2026-06-15.
