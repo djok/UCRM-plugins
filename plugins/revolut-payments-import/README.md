@@ -61,7 +61,6 @@ note matching for payments imported by older versions. The page UI is in
 Bulgarian. The transfer list honors the "Revolut accounts to import from"
 filter — it shows exactly what the plugin imports.
 
-## Statement CSV import (full sender IBANs)
 ## Sender-identity matching (no-IBAN transfers)
 Revolut's API exposes no sender IBAN for external incoming transfers, so the
 plugin also matches by the **sender's name**, fed through the same
