@@ -25,6 +25,7 @@ final class StatementImporter
         private readonly PaymentLookup $existingPayments,
         private readonly IdempotencyStore $idempotency,
         private readonly Logger $logger,
+        private readonly ?ReMatcher $reMatcher = null,
     ) {
     }
 
@@ -37,10 +38,17 @@ final class StatementImporter
         $imported = 0;
         foreach ($rows as $row) {
             if ($this->idempotency->isProcessed($row['id'])) {
+                // Already imported (or deliberately skipped) — give the row a
+                // second chance: attach/learn on the existing payment.
+                $this->reMatcher?->reMatch($row);
+
                 continue;
             }
 
             $client = $row['senderIban'] !== '' ? $this->clients->findClientByIban($row['senderIban']) : null;
+            if ($client === null && $row['senderName'] !== '') {
+                $client = $this->clients->findClientByIban($row['senderName']);
+            }
             $clientId = isset($client['id']) ? (int) $client['id'] : null;
 
             // Manually entered payments guard: if the matched client already has a

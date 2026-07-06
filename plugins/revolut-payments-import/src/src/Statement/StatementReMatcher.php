@@ -16,7 +16,7 @@ use RevolutPaymentsImport\Ucrm\PaymentUpdaterInterface;
  * client's sender identities so future webhook payments (which carry no IBAN)
  * match by name automatically.
  */
-final class StatementReMatcher
+final class StatementReMatcher implements ReMatcher
 {
     public function __construct(
         private readonly PaymentFinderInterface $payments,

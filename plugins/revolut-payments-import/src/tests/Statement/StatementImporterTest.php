@@ -5,6 +5,7 @@ namespace RevolutPaymentsImport\Tests\Statement;
 
 use PHPUnit\Framework\TestCase;
 use RevolutPaymentsImport\Matching\ClientRepository;
+use RevolutPaymentsImport\Statement\ReMatcher;
 use RevolutPaymentsImport\Statement\StatementImporter;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
@@ -116,6 +117,83 @@ final class StatementImporterTest extends TestCase
         self::assertSame(1, $lookup->calls);
         // Decision is final — the row must not come back on a re-run.
         self::assertTrue($store->isProcessed('st-3'));
+    }
+
+    public function testProcessedRowIsDelegatedToReMatcher(): void
+    {
+        $clients = new class(['id' => 42]) implements ClientRepository {
+            public function __construct(private ?array $client)
+            {
+            }
+
+            public function findClientByIban(string $iban): ?array
+            {
+                return $this->client;
+            }
+        };
+        $recorder = new CapturingRecorder();
+        $store = new IdempotencyStore($this->storePath);
+        $store->markProcessed('st-1');
+        $reMatcher = new class implements ReMatcher {
+            /** @var list<array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string}> */
+            public array $received = [];
+
+            public function reMatch(array $row): void
+            {
+                $this->received[] = $row;
+            }
+        };
+        $importer = new StatementImporter(
+            $clients,
+            $recorder,
+            new CountingLookup(false),
+            $store,
+            new Logger(static fn (string $l) => null),
+            $reMatcher,
+        );
+
+        $imported = $importer->import([$this->row()]);
+
+        self::assertSame(0, $imported);
+        self::assertCount(0, $recorder->records);
+        self::assertCount(1, $reMatcher->received);
+        self::assertSame('st-1', $reMatcher->received[0]['id']);
+    }
+
+    public function testNewRowFallsBackToSenderNameWhenIbanUnknown(): void
+    {
+        $row = $this->row('st-4');
+        $clients = new class($row) implements ClientRepository {
+            /** @var list<string> */
+            public array $askedIbans = [];
+
+            public function __construct(private array $row)
+            {
+            }
+
+            public function findClientByIban(string $iban): ?array
+            {
+                $this->askedIbans[] = $iban;
+
+                if ($iban === $this->row['senderIban']) {
+                    return null;
+                }
+
+                if ($iban === $this->row['senderName']) {
+                    return ['id' => 42];
+                }
+
+                return null;
+            }
+        };
+        $recorder = new CapturingRecorder();
+        $store = new IdempotencyStore($this->storePath);
+        $importer = new StatementImporter($clients, $recorder, new CountingLookup(false), $store, new Logger(static fn (string $l) => null));
+
+        $imported = $importer->import([$row]);
+
+        self::assertSame(1, $imported);
+        self::assertSame(42, $recorder->records[0]->clientId);
     }
 }
 
