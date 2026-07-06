@@ -51,6 +51,20 @@ final class IdempotencyStore
         $this->flush();
     }
 
+    /**
+     * Removes an id so the transaction can be imported again — used by the
+     * status page's explicit re-import action when the payment was deleted
+     * in UISP. Reconciliation itself never forgets ids.
+     */
+    public function forget(string $id): void
+    {
+        if (! isset($this->processed[$id])) {
+            return;
+        }
+        unset($this->processed[$id]);
+        $this->flush();
+    }
+
     private function flush(): void
     {
         $json = json_encode(array_keys($this->processed), JSON_UNESCAPED_SLASHES);

@@ -47,4 +47,29 @@ final class IdempotencyStoreTest extends TestCase
         $reloaded = new IdempotencyStore($this->path);
         self::assertTrue($reloaded->isProcessed('tx-1'));
     }
+
+    public function testForgetRemovesIdAndPersists(): void
+    {
+        $store = new IdempotencyStore($this->path);
+        $store->markProcessed('tx-1');
+        $store->markProcessed('tx-2');
+
+        $store->forget('tx-1');
+
+        self::assertFalse($store->isProcessed('tx-1'));
+        self::assertTrue($store->isProcessed('tx-2'));
+        $reloaded = new IdempotencyStore($this->path);
+        self::assertFalse($reloaded->isProcessed('tx-1'));
+        self::assertTrue($reloaded->isProcessed('tx-2'));
+    }
+
+    public function testForgetUnknownIdIsHarmless(): void
+    {
+        $store = new IdempotencyStore($this->path);
+        $store->markProcessed('tx-1');
+
+        $store->forget('tx-unknown');
+
+        self::assertTrue($store->isProcessed('tx-1'));
+    }
 }
