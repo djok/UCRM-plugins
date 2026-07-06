@@ -140,4 +140,17 @@ final class UcrmPaymentGatewayTest extends TestCase
         self::assertSame(1, $ucrm->methodCalls);
         self::assertCount(2, $ucrm->posted);
     }
+
+    public function testStampsProviderNameAndPaymentId(): void
+    {
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, 'Bank transfer');
+
+        $gateway->record(new IncomingPayment(12.44, 'EUR', 42, 'Revolut: John', 'tx-abc'));
+
+        $data = $ucrm->posted[0]['data'];
+        self::assertSame('Revolut', $data['providerName']);
+        self::assertSame('tx-abc', $data['providerPaymentId']);
+        self::assertSame('Revolut', UcrmPaymentGateway::PROVIDER_NAME);
+    }
 }

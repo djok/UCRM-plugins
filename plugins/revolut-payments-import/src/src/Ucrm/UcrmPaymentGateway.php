@@ -10,6 +10,9 @@ namespace RevolutPaymentsImport\Ucrm;
  */
 final class UcrmPaymentGateway implements PaymentRecorder
 {
+    /** Stamped on every created payment; the status page matches on it. */
+    public const PROVIDER_NAME = 'Revolut';
+
     private ?string $methodId = null;
 
     public function __construct(
@@ -25,6 +28,8 @@ final class UcrmPaymentGateway implements PaymentRecorder
             'currencyCode' => $payment->currencyCode,
             'methodId' => $this->resolveMethodId(),
             'note' => $payment->note,
+            'providerName' => self::PROVIDER_NAME,
+            'providerPaymentId' => $payment->externalId,
         ];
         if ($payment->clientId !== null) {
             $data['clientId'] = $payment->clientId;
