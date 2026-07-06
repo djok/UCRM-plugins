@@ -62,6 +62,27 @@ Bulgarian. The transfer list honors the "Revolut accounts to import from"
 filter — it shows exactly what the plugin imports.
 
 ## Statement CSV import (full sender IBANs)
+## Sender-identity matching (no-IBAN transfers)
+Revolut's API exposes no sender IBAN for external incoming transfers, so the
+plugin also matches by the **sender's name**, fed through the same
+bank-account matching as IBANs: add the sender name (as shown on the status
+page — use the ⧉ copy icon) as an extra *Bank account* entry on the client in
+UISP, and every future transfer from that sender is attached automatically.
+A client can hold any number of such entries (IBANs and names mixed);
+matching ignores case and whitespace.
+
+**Statement upload attaches and learns.** When you upload an account
+statement CSV, rows whose transaction was already imported get a second pass:
+if the payment is still unassigned, the plugin recognizes the client by the
+statement's `Sender account` IBAN (or sender name) and attaches the payment.
+With **Learn sender identities** enabled (default), it also stores the sender
+IBAN + name on the recognized client — one statement upload teaches the
+plugin to auto-match all your senders from then on. Re-processing happens
+only when the uploaded file's content changes, so upload a fresh export to
+re-run. If your UISP version rejects attaching payments via API, the log
+says so per payment and everything else still works.
+
+## Statement CSV import (full sender IBANs)
 The Business API does not always expose the sender's IBAN for incoming
 transfers, but Revolut's **account-statement CSV export** always does ("Sender
 account" + "Sender name" columns). Upload the export via the **Account
