@@ -161,14 +161,15 @@ final class StatementReMatcherTest extends TestCase
 
         self::assertSame([], $updater->attached);
         self::assertSame([], $learner->learned);
-        self::assertNotSame([], $this->logLines);
+        self::assertStringContainsString('no client recognized', $this->logLines[0]);
     }
 
     public function testAlreadyAssignedPaymentWithLearnSendersLearnsOnlyNoAttach(): void
     {
         $finder = $this->finderReturning(['id' => 13, 'clientId' => 42]);
         $updater = $this->updaterSpy(true);
-        $clients = $this->clientsByIban(['BG47UNCR70001521149247' => ['id' => 42]]);
+        // Matched client differs (99) to prove learning binds to the payment's existing client (42)
+        $clients = $this->clientsByIban(['BG47UNCR70001521149247' => ['id' => 99]]);
         $learner = $this->learnerSpy();
 
         $reMatcher = new StatementReMatcher($finder, $updater, $clients, $learner, $this->logger(), true);
