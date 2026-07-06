@@ -16,4 +16,10 @@ interface UcrmClient
      * @return array<mixed>
      */
     public function post(string $endpoint, array $data): array;
+
+    /**
+     * @param array<string,mixed> $data
+     * @return array<mixed>
+     */
+    public function patch(string $endpoint, array $data): array;
 }

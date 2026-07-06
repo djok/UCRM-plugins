@@ -29,4 +29,11 @@ final class SdkUcrmClient implements UcrmClient
 
         return is_array($result) ? $result : [];
     }
+
+    public function patch(string $endpoint, array $data): array
+    {
+        $result = $this->api->patch($endpoint, $data);
+
+        return is_array($result) ? $result : [];
+    }
 }

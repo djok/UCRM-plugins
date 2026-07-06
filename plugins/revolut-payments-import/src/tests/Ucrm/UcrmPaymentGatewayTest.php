@@ -34,6 +34,11 @@ final class UcrmPaymentGatewayTest extends TestCase
 
                 return ['id' => 999];
             }
+
+            public function patch(string $endpoint, array $data): array
+            {
+                return [];
+            }
         };
     }
 
@@ -162,6 +167,11 @@ final class UcrmPaymentGatewayTest extends TestCase
             {
                 $this->posted[] = ['endpoint' => $endpoint, 'data' => $data];
 
+                return [];
+            }
+
+            public function patch(string $endpoint, array $data): array
+            {
                 return [];
             }
         };

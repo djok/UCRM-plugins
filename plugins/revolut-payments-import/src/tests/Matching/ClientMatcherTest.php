@@ -35,6 +35,11 @@ final class ClientMatcherTest extends TestCase
             {
                 return [];
             }
+
+            public function patch(string $endpoint, array $data): array
+            {
+                return [];
+            }
         };
     }
 
