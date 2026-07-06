@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Tests\Webhook;
 
 use PHPUnit\Framework\TestCase;
+use RevolutPaymentsImport\Matching\ClientMatcher;
 use RevolutPaymentsImport\Matching\ClientRepository;
 use RevolutPaymentsImport\Revolut\CounterpartySource;
 use RevolutPaymentsImport\Revolut\TransactionSource;
@@ -259,6 +260,115 @@ final class EventProcessorTest extends TestCase
         $processor->processEvent(['event' => 'TransactionCreated', 'data' => []]);
 
         self::assertCount(0, $recorder->records);
+    }
+
+    public function testMatchesClientBySenderNameWhenIbanMissing(): void
+    {
+        $recorder = new RecordingRecorder();
+        $txSource = new class(['tx-name' => [
+            'id' => 'tx-name',
+            'state' => 'completed',
+            'type' => 'topup',
+            'legs' => [[
+                'amount' => 49.08,
+                'currency' => 'EUR',
+                'description' => 'Payment from Astreya 91 Ood',
+            ]],
+        ]]) implements TransactionSource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getTransaction(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        $cpSource = new class([]) implements CounterpartySource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getCounterparty(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        // Client repository that knows no IBANs but recognizes the sender name
+        // stored as a bank-account entry (Paysera model).
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                return ClientMatcher::normalizeIban($iban) === 'ASTREYA91OOD' ? ['id' => 42] : null;
+            }
+        };
+
+        $processor = new EventProcessor(
+            $txSource,
+            $cpSource,
+            $clients,
+            $recorder,
+            new IdempotencyStore($this->storePath),
+            new Logger(static fn (string $l) => null),
+        );
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-name']]);
+
+        self::assertCount(1, $recorder->records);
+        self::assertSame(42, $recorder->records[0]->clientId);
+    }
+
+    public function testIbanMatchTakesPrecedenceOverName(): void
+    {
+        $recorder = new RecordingRecorder();
+        $tx = $this->completedIncoming();
+        $tx['legs'][0]['description'] = 'Payment from Astreya 91 Ood';
+        $txSource = new class(['tx-1' => $tx]) implements TransactionSource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getTransaction(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        $cpSource = new class(['cp-1' => ['id' => 'cp-1', 'name' => 'Astreya 91 Ood', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]]) implements CounterpartySource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getCounterparty(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        // IBAN candidate resolves to client 1; name candidate resolves to client 2.
+        // The IBAN must win.
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                $normalized = ClientMatcher::normalizeIban($iban);
+                if ($normalized === ClientMatcher::normalizeIban('BG80BNBG96611020345678')) {
+                    return ['id' => 1];
+                }
+                if ($normalized === 'ASTREYA91OOD') {
+                    return ['id' => 2];
+                }
+
+                return null;
+            }
+        };
+
+        $processor = new EventProcessor(
+            $txSource,
+            $cpSource,
+            $clients,
+            $recorder,
+            new IdempotencyStore($this->storePath),
+            new Logger(static fn (string $l) => null),
+        );
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-1']]);
+
+        self::assertCount(1, $recorder->records);
+        self::assertSame(1, $recorder->records[0]->clientId);
     }
 }
 

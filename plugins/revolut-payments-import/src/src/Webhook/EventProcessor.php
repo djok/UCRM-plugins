@@ -15,7 +15,8 @@ use RevolutPaymentsImport\Ucrm\PaymentRecorder;
  * Turns a Revolut event/transaction into a UCRM payment.
  * Incoming bank payment = state 'completed', type in {transfer, topup},
  * a leg with positive amount. Sender IBAN comes from the counterparty lookup;
- * the client is matched by that IBAN, else the payment is recorded unassigned.
+ * the client is matched by that IBAN, then by sender name, else the payment
+ * is recorded unassigned.
  */
 final class EventProcessor
 {
@@ -106,13 +107,10 @@ final class EventProcessor
         }
 
         $sender = $this->resolveSender($leg);
-        if ($sender['iban'] === null) {
-            // Diagnostic: capture what the API actually returns for senders without
-            // a resolvable IBAN, so the field mapping can be extended if Revolut
-            // exposes the remitter elsewhere. Admin-only log; remove once settled.
-            $this->logger->info('DEBUG transaction without sender IBAN: ' . json_encode($transaction, JSON_UNESCAPED_UNICODE));
-        }
-        $clientId = $this->matchClient($sender['iban']);
+        // The API exposes no sender IBAN for external transfers (verified),
+        // so fall back to the sender NAME through the same matching channel —
+        // a name stored as a bankAccounts entry on the client acts as an IBAN.
+        $clientId = $this->matchClient($sender['iban']) ?? $this->matchClient($sender['name']);
 
         $completedAt = $transaction['completed_at'] ?? $transaction['created_at'] ?? null;
         $payment = new IncomingPayment(
