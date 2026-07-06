@@ -111,4 +111,87 @@ final class MonthlyStatusReportTest extends TestCase
         self::assertSame('ИВАН ИВАНОВ', $row->sender);
         self::assertSame('', $row->reference);
     }
+
+    /** @param array<string,mixed> $overrides */
+    private function payment(array $overrides = []): array
+    {
+        return array_replace([
+            'id' => 1,
+            'clientId' => 42,
+            'amount' => 50.0,
+            'currencyCode' => 'EUR',
+            'note' => 'Revolut: ACME LTD | Invoice 1',
+            'createdDate' => '2026-06-15T10:00:00+00:00',
+            'providerName' => null,
+            'providerPaymentId' => null,
+        ], $overrides);
+    }
+
+    public function testExactProviderIdMatchIsAssigned(): void
+    {
+        $payment = $this->payment(['providerName' => 'Revolut', 'providerPaymentId' => 'tx-1', 'amount' => 999.0]);
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-1')], [$payment], self::notProcessed())[0];
+
+        self::assertSame(StatusRow::STATUS_ASSIGNED, $row->status);
+        self::assertSame(42, $row->clientId);
+    }
+
+    public function testExactMatchWithoutClientIsUnassigned(): void
+    {
+        $payment = $this->payment(['providerName' => 'Revolut', 'providerPaymentId' => 'tx-1', 'clientId' => null]);
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-1')], [$payment], self::notProcessed())[0];
+
+        self::assertSame(StatusRow::STATUS_UNASSIGNED, $row->status);
+        self::assertNull($row->clientId);
+    }
+
+    public function testForeignProviderIdIsNotExactMatched(): void
+    {
+        $payment = $this->payment(['providerName' => 'Fio CZ', 'providerPaymentId' => 'tx-1', 'note' => 'other', 'amount' => 999.0]);
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-1')], [$payment], self::notProcessed())[0];
+
+        self::assertSame(StatusRow::STATUS_MISSING, $row->status);
+    }
+
+    public function testLegacyPaymentMatchesByNoteAmountAndDate(): void
+    {
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-1')], [$this->payment()], self::notProcessed())[0];
+
+        self::assertSame(StatusRow::STATUS_ASSIGNED, $row->status);
+        self::assertSame(42, $row->clientId);
+    }
+
+    public function testLegacyMatchRejectsDifferentAmountOrDate(): void
+    {
+        $report = new MonthlyStatusReport();
+        $wrongAmount = $this->payment(['amount' => 50.01]);
+        $wrongDate = $this->payment(['createdDate' => '2026-06-16T10:00:00+00:00']);
+
+        self::assertSame(StatusRow::STATUS_MISSING, $report->build([$this->tx('tx-1')], [$wrongAmount], self::notProcessed())[0]->status);
+        self::assertSame(StatusRow::STATUS_MISSING, $report->build([$this->tx('tx-1')], [$wrongDate], self::notProcessed())[0]->status);
+    }
+
+    public function testManualPaymentWithoutRevolutNoteIsNeverHeuristicallyMatched(): void
+    {
+        $manual = $this->payment(['note' => 'платено на каса']);
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-1')], [$manual], self::notProcessed())[0];
+
+        self::assertSame(StatusRow::STATUS_MISSING, $row->status);
+    }
+
+    public function testLegacyPaymentIsConsumedByFirstTransferOnly(): void
+    {
+        $transfers = [$this->tx('tx-1'), $this->tx('tx-2')];
+
+        $rows = (new MonthlyStatusReport())->build($transfers, [$this->payment()], self::notProcessed());
+
+        self::assertSame(
+            [StatusRow::STATUS_ASSIGNED, StatusRow::STATUS_MISSING],
+            array_map(static fn (StatusRow $r): string => $r->status, $rows),
+        );
+    }
 }

@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace RevolutPaymentsImport\Status;
 
+use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
+
 /**
  * Pure reconciliation logic for the status page: filters raw Revolut
  * transactions down to in-scope incoming transfers (same rules as
@@ -13,6 +15,9 @@ final class MonthlyStatusReport
 {
     /** Keep in sync with EventProcessor::INCOMING_TYPES. */
     private const INCOMING_TYPES = ['transfer', 'topup'];
+    /** Same tolerance as UcrmPaymentLookup::AMOUNT_EPSILON. */
+    private const AMOUNT_EPSILON = 0.005;
+    private const LEGACY_NOTE_PREFIX = 'Revolut: ';
 
     /** @var list<string> lowercase account ids; empty = all accounts */
     private readonly array $allowedAccountIds;
@@ -34,6 +39,23 @@ final class MonthlyStatusReport
      */
     public function build(array $transactions, array $payments, callable $isProcessed): array
     {
+        $byProviderId = [];
+        $legacyPool = [];
+        foreach ($payments as $index => $payment) {
+            if (! is_array($payment)) {
+                continue;
+            }
+            $providerId = (string) ($payment['providerPaymentId'] ?? '');
+            if (($payment['providerName'] ?? null) === UcrmPaymentGateway::PROVIDER_NAME && $providerId !== '') {
+                $byProviderId[$providerId] = $payment;
+
+                continue;
+            }
+            if (str_starts_with((string) ($payment['note'] ?? ''), self::LEGACY_NOTE_PREFIX)) {
+                $legacyPool[$index] = $payment;
+            }
+        }
+
         $rows = [];
         foreach ($transactions as $transaction) {
             if (! is_array($transaction)) {
@@ -61,16 +83,43 @@ final class MonthlyStatusReport
             }
 
             $completedAt = $transaction['completed_at'] ?? $transaction['created_at'] ?? '';
-            $status = $isProcessed($id) ? StatusRow::STATUS_SKIPPED : StatusRow::STATUS_MISSING;
+            $date = substr(is_string($completedAt) ? $completedAt : '', 0, 10);
+            $amount = (float) $leg['amount'];
+
+            $payment = $byProviderId[$id] ?? null;
+            if ($payment === null) {
+                foreach ($legacyPool as $index => $candidate) {
+                    if (
+                        abs((float) ($candidate['amount'] ?? 0.0) - $amount) < self::AMOUNT_EPSILON
+                        && substr((string) ($candidate['createdDate'] ?? ''), 0, 10) === $date
+                    ) {
+                        $payment = $candidate;
+                        unset($legacyPool[$index]); // a payment backs at most one transfer
+
+                        break;
+                    }
+                }
+            }
+
+            $clientId = $payment !== null && isset($payment['clientId']) && $payment['clientId'] !== null
+                ? (int) $payment['clientId']
+                : null;
+            $status = match (true) {
+                $payment !== null && $clientId !== null => StatusRow::STATUS_ASSIGNED,
+                $payment !== null => StatusRow::STATUS_UNASSIGNED,
+                $isProcessed($id) => StatusRow::STATUS_SKIPPED,
+                default => StatusRow::STATUS_MISSING,
+            };
 
             $rows[] = new StatusRow(
                 transactionId: $id,
-                date: substr(is_string($completedAt) ? $completedAt : '', 0, 10),
-                amount: (float) $leg['amount'],
+                date: $date,
+                amount: $amount,
                 currency: (string) ($leg['currency'] ?? ''),
                 sender: $this->senderFromLeg($leg),
                 reference: (string) ($transaction['reference'] ?? ''),
                 status: $status,
+                clientId: $clientId,
             );
         }
 
