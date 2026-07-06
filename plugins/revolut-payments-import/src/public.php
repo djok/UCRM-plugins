@@ -467,7 +467,12 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
             . htmlspecialchars($row->date) . '</a></td>'
             . '<td class="text-right">' . number_format($row->amount, 2, '.', ' ') . '</td>'
             . '<td>' . htmlspecialchars($row->currency) . '</td>'
-            . '<td>' . htmlspecialchars($row->sender) . '</td>'
+            . '<td>' . htmlspecialchars($row->sender)
+            . ($row->clientId === null && $row->sender !== ''
+                ? ' <a href="#" class="copy-sender" data-sender="' . htmlspecialchars($row->sender)
+                    . '" title="Копирай името — добавете го като Bank account на клиента в UISP и всички бъдещи преводи от този изпращач ще се разнасят автоматично">⧉</a>'
+                : '')
+            . '</td>'
             . '<td>' . htmlspecialchars($row->reference) . '</td>'
             . '<td>' . htmlspecialchars($label) . '</td>'
             . '<td>' . $client . '</td>'
@@ -478,6 +483,11 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
         . '<th>Подател</th><th>Основание</th><th>Статус</th><th>Клиент</th></tr></thead>'
         . '<tbody>' . $cells . '</tbody>'
         . '</table></div></div>';
+
+    $html .= '<script>document.addEventListener("click",function(e){'
+        . 'var a=e.target.closest("a.copy-sender");if(!a)return;e.preventDefault();'
+        . 'navigator.clipboard.writeText(a.dataset.sender).then(function(){a.textContent="✓";setTimeout(function(){a.textContent="⧉";},1500);});'
+        . '});</script>';
 
     return $html;
 }
