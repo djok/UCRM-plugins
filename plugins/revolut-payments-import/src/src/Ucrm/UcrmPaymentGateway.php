@@ -35,10 +35,30 @@ final class UcrmPaymentGateway implements PaymentRecorder
             $data['clientId'] = $payment->clientId;
         }
         if ($payment->createdDate !== null) {
-            $data['createdDate'] = $payment->createdDate;
+            $createdDate = $this->normalizeCreatedDate($payment->createdDate);
+            if ($createdDate !== null) {
+                $data['createdDate'] = $createdDate;
+            }
         }
 
         $this->ucrm->post('payments', $data);
+    }
+
+    /**
+     * UISP rejects datetimes with fractional seconds (400 "Invalid datetime …,
+     * expected Y-m-TH:i:sO"), and Revolut's completed_at carries microseconds.
+     * Normalize to second precision in UTC; an unparseable value is dropped so
+     * the payment is recorded dated today instead of failing the POST.
+     */
+    private function normalizeCreatedDate(string $value): ?string
+    {
+        try {
+            return (new \DateTimeImmutable($value))
+                ->setTimezone(new \DateTimeZone('UTC'))
+                ->format('Y-m-d\TH:i:s\Z');
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 
     private function resolveMethodId(): string

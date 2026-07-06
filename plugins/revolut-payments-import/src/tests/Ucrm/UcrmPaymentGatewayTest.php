@@ -77,6 +77,39 @@ final class UcrmPaymentGatewayTest extends TestCase
         self::assertArrayNotHasKey('createdDate', $ucrm->posted[1]['data']);
     }
 
+    public function testNormalizesCreatedDateWithFractionalSeconds(): void
+    {
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, 'Bank transfer');
+
+        // Live Revolut webhooks carry microseconds in completed_at — UISP
+        // rejects those with 400 "Invalid datetime …, expected Y-m-TH:i:sO".
+        $gateway->record(new IncomingPayment(49.08, 'EUR', 1, 'n', 'tx-f', '2026-06-15T09:15:44.518680Z'));
+
+        self::assertSame('2026-06-15T09:15:44Z', $ucrm->posted[0]['data']['createdDate']);
+    }
+
+    public function testNormalizesCreatedDateOffsetToUtc(): void
+    {
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, 'Bank transfer');
+
+        $gateway->record(new IncomingPayment(1.0, 'EUR', 1, 'n', 'tx-g', '2026-06-15T12:15:44.123+03:00'));
+
+        self::assertSame('2026-06-15T09:15:44Z', $ucrm->posted[0]['data']['createdDate']);
+    }
+
+    public function testOmitsUnparseableCreatedDate(): void
+    {
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, 'Bank transfer');
+
+        // Better to record the payment dated today than to lose it to a 400.
+        $gateway->record(new IncomingPayment(1.0, 'EUR', 1, 'n', 'tx-h', 'not-a-date'));
+
+        self::assertArrayNotHasKey('createdDate', $ucrm->posted[0]['data']);
+    }
+
     public function testResolvesMethodByIdToo(): void
     {
         $ucrm = $this->ucrm();
