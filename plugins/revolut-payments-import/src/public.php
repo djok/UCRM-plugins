@@ -68,6 +68,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
     return;
 }
 
+// Admin-only action from the status page: re-import one transaction whose
+// payment was deleted in UISP (its id stays in processed.json, so normal
+// reconciliation deliberately skips it). Webhook POSTs carry a JSON body,
+// never form fields, so they fall through untouched.
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && ($_POST['action'] ?? '') === 'reimport') {
+    handleReimportAction($config, $logger);
+
+    return;
+}
+
 $rawBody = (string) file_get_contents('php://input');
 $timestamp = $_SERVER['HTTP_REVOLUT_REQUEST_TIMESTAMP'] ?? '';
 $signature = $_SERVER['HTTP_REVOLUT_SIGNATURE'] ?? '';
@@ -311,13 +321,45 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
 
         $store = new IdempotencyStore(__DIR__ . '/data/processed.json');
         $report = new MonthlyStatusReport($config->accountIds());
-        $rows = $report->build($transactions, $payments, [$store, 'isProcessed']);
+
+        // Sender → expected client, memoized per normalized sender (each miss
+        // costs a full GET clients through ClientMatcher).
+        $matcher = new ClientMatcher($ucrm);
+        $resolveCache = [];
+        $resolveClient = static function (string $sender) use ($matcher, &$resolveCache): ?int {
+            $key = ClientMatcher::normalizeIban($sender);
+            if ($key === '') {
+                return null;
+            }
+            if (! array_key_exists($key, $resolveCache)) {
+                $client = $matcher->findClientByIban($sender);
+                $resolveCache[$key] = isset($client['id']) ? (int) $client['id'] : null;
+            }
+
+            return $resolveCache[$key];
+        };
+
+        $rows = $report->build($transactions, $payments, [$store, 'isProcessed'], $resolveClient);
         $summary = $report->summarize($rows);
         $clientNames = fetchClientNames($ucrm, $rows);
 
+        $reimportTokens = [];
+        foreach ($rows as $row) {
+            if ($row->status === StatusRow::STATUS_GONE) {
+                $token = statusActionToken($row->transactionId, $config);
+                if ($token !== null) {
+                    $reimportTokens[$row->transactionId] = $token;
+                }
+            }
+        }
+
+        $flash = isset($_GET['reimported'])
+            ? '<div class="alert alert-success py-2">Транзакцията беше обработена наново — вижте статуса на реда по-долу.</div>'
+            : '';
+
         renderUispPage(
             'Revolut преводи — ' . monthLabelBg($window->ym),
-            renderStatusBody($rows, $summary, $window, $clientNames, $crmUrl),
+            $flash . renderStatusBody($rows, $summary, $window, $clientNames, $crmUrl, $reimportTokens),
             $crmUrl,
         );
     } catch (\Throwable $e) {
@@ -326,6 +368,83 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
         http_response_code(500);
         renderUispPage('Грешка', '<p>Справката не можа да бъде заредена. Проверете лога на плъгина в UISP.</p>', $crmUrl);
     }
+}
+
+/**
+ * Explicit re-import of one transaction (status page „Добави наново"): forgets
+ * the idempotency record and runs the standard pipeline — original date,
+ * provider stamping, IBAN→name client matching. Admin session + HMAC required.
+ */
+function handleReimportAction(PluginConfig $config, Logger $logger): void
+{
+    $user = null;
+    try {
+        $user = UcrmSecurity::create()->getUser();
+    } catch (\Throwable $e) {
+        $user = null;
+    }
+    if ($user === null || $user->isClient) {
+        http_response_code(403);
+        renderHtml('Забранен достъп', 'Влезте в UISP като администратор.');
+
+        return;
+    }
+
+    $txId = isset($_POST['tx']) && is_string($_POST['tx']) ? trim($_POST['tx']) : '';
+    $token = isset($_POST['token']) && is_string($_POST['token']) ? $_POST['token'] : '';
+    $month = isset($_POST['month']) && is_string($_POST['month']) ? $_POST['month'] : '';
+    $expected = statusActionToken($txId, $config);
+    if ($expected === null || ! hash_equals($expected, $token)) {
+        http_response_code(403);
+        renderHtml('Невалидна заявка', 'Невалидна защитна отметка — презаредете статус страницата и опитайте отново.');
+
+        return;
+    }
+
+    try {
+        $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
+        $tokenProvider = new TokenProvider(
+            new RevolutClient(new Client(), $config->environment()),
+            $config,
+            new JwtClientAssertion(),
+            $privateKey,
+            time(),
+        );
+        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
+        $transaction = (new TransactionsApi($revolut))->getTransaction($txId);
+        if ($transaction === null) {
+            renderHtml('Не е намерена', 'Revolut не върна такава транзакция. Проверете лога на плъгина.');
+
+            return;
+        }
+
+        // Forget FIRST (flushes to disk), then build the processor — its own
+        // IdempotencyStore instance loads the file fresh and will record anew.
+        (new IdempotencyStore(__DIR__ . '/data/processed.json'))->forget($txId);
+        buildProcessor($config, $logger)->processTransaction($transaction);
+        $logger->info('Re-import: transaction ' . $txId . ' re-processed on admin request.');
+
+        header(
+            'Location: ?status=1&reimported=1' . ($month !== '' ? '&month=' . rawurlencode($month) : ''),
+            true,
+            303,
+        );
+    } catch (\Throwable $e) {
+        $logger->error('Re-import error for ' . $txId . ': ' . $e->getMessage());
+        http_response_code(500);
+        renderHtml('Грешка', 'Реимпортът не успя. Проверете лога на плъгина в UISP.');
+    }
+}
+
+/** HMAC guarding status-page actions; null while unconfigured (no secret). */
+function statusActionToken(string $txId, PluginConfig $config): ?string
+{
+    $secret = $config->signingSecret();
+    if ($txId === '' || $secret === null) {
+        return null;
+    }
+
+    return hash_hmac('sha256', 'reimport:' . $txId, $secret);
 }
 
 /**
@@ -407,13 +526,15 @@ function monthLabelBg(string $ym): string
  * @param list<StatusRow> $rows
  * @param array<string,array{count:int,amounts:array<string,float>}> $summary
  * @param array<int,string> $clientNames
+ * @param array<string,string> $reimportTokens tx id => HMAC for GONE rows
  */
-function renderStatusBody(array $rows, array $summary, MonthWindow $window, array $clientNames, string $crmUrl): string
+function renderStatusBody(array $rows, array $summary, MonthWindow $window, array $clientNames, string $crmUrl, array $reimportTokens = []): string
 {
     $statusMeta = [
         StatusRow::STATUS_ASSIGNED => ['✅ Разнесен', 'success'],
         StatusRow::STATUS_UNASSIGNED => ['⚠️ Записан без клиент', 'warning'],
         StatusRow::STATUS_SKIPPED => ['⏭ Пропуснат (ръчно плащане)', 'secondary'],
+        StatusRow::STATUS_GONE => ['🗑 Обработено, но липсва', 'info'],
         StatusRow::STATUS_MISSING => ['❌ Липсва', 'danger'],
     ];
 
@@ -454,6 +575,18 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
     $cells = '';
     foreach ($rows as $row) {
         [$label, $badge] = $statusMeta[$row->status];
+        $action = '';
+        if ($row->status === StatusRow::STATUS_GONE && isset($reimportTokens[$row->transactionId])) {
+            $action = ' <form method="post" class="d-inline ml-2">'
+                . '<input type="hidden" name="action" value="reimport">'
+                . '<input type="hidden" name="tx" value="' . htmlspecialchars($row->transactionId) . '">'
+                . '<input type="hidden" name="token" value="' . htmlspecialchars($reimportTokens[$row->transactionId]) . '">'
+                . '<input type="hidden" name="month" value="' . htmlspecialchars($window->ym) . '">'
+                . '<button type="submit" class="btn btn-outline-primary btn-sm py-0" '
+                . 'title="Маха записа от историята на плъгина и внася плащането наново от Revolut — с оригиналната дата и автоматично разпознат клиент">'
+                . 'Добави наново</button>'
+                . '</form>';
+        }
         $client = '&mdash;';
         if ($row->clientId !== null) {
             $name = htmlspecialchars($clientNames[$row->clientId] ?? ('#' . $row->clientId));
@@ -474,7 +607,7 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
                 : '')
             . '</td>'
             . '<td>' . htmlspecialchars($row->reference) . '</td>'
-            . '<td>' . htmlspecialchars($label) . '</td>'
+            . '<td>' . htmlspecialchars($label) . $action . '</td>'
             . '<td>' . $client . '</td>'
             . '</tr>';
     }
