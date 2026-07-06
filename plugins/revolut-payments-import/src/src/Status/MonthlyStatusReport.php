@@ -155,4 +155,29 @@ final class MonthlyStatusReport
 
         return (string) preg_replace('/^(payment from|добавени пари от)\s+/iu', '', $description);
     }
+
+    /**
+     * @param list<StatusRow> $rows
+     * @return array<string, array{count:int, amounts:array<string,float>}>
+     */
+    public function summarize(array $rows): array
+    {
+        $statuses = [
+            StatusRow::STATUS_ASSIGNED,
+            StatusRow::STATUS_UNASSIGNED,
+            StatusRow::STATUS_SKIPPED,
+            StatusRow::STATUS_MISSING,
+        ];
+        $summary = [];
+        foreach ($statuses as $status) {
+            $summary[$status] = ['count' => 0, 'amounts' => []];
+        }
+        foreach ($rows as $row) {
+            $summary[$row->status]['count']++;
+            $summary[$row->status]['amounts'][$row->currency] =
+                ($summary[$row->status]['amounts'][$row->currency] ?? 0.0) + $row->amount;
+        }
+
+        return $summary;
+    }
 }

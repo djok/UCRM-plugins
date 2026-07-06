@@ -194,4 +194,23 @@ final class MonthlyStatusReportTest extends TestCase
             array_map(static fn (StatusRow $r): string => $r->status, $rows),
         );
     }
+
+    public function testSummarizeCountsAndSumsPerCurrency(): void
+    {
+        $rows = [
+            new StatusRow('a', '2026-06-01', 10.0, 'EUR', '', '', StatusRow::STATUS_ASSIGNED, 1),
+            new StatusRow('b', '2026-06-02', 5.5, 'EUR', '', '', StatusRow::STATUS_ASSIGNED, 2),
+            new StatusRow('c', '2026-06-03', 7.0, 'USD', '', '', StatusRow::STATUS_ASSIGNED, 3),
+            new StatusRow('d', '2026-06-04', 99.0, 'EUR', '', '', StatusRow::STATUS_MISSING),
+        ];
+
+        $summary = (new MonthlyStatusReport())->summarize($rows);
+
+        self::assertSame(3, $summary[StatusRow::STATUS_ASSIGNED]['count']);
+        self::assertSame(15.5, $summary[StatusRow::STATUS_ASSIGNED]['amounts']['EUR']);
+        self::assertSame(7.0, $summary[StatusRow::STATUS_ASSIGNED]['amounts']['USD']);
+        self::assertSame(1, $summary[StatusRow::STATUS_MISSING]['count']);
+        self::assertSame(0, $summary[StatusRow::STATUS_UNASSIGNED]['count']);
+        self::assertSame([], $summary[StatusRow::STATUS_SKIPPED]['amounts']);
+    }
 }
