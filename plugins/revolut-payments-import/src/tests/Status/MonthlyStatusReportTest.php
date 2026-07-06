@@ -82,13 +82,13 @@ final class MonthlyStatusReportTest extends TestCase
         self::assertSame(['kept'], array_map(static fn (StatusRow $r): string => $r->transactionId, $rows));
     }
 
-    public function testProcessedTransferWithoutPaymentIsSkippedStatus(): void
+    public function testProcessedTransferWithoutAnyPaymentIsGone(): void
     {
         $isProcessed = static fn (string $id): bool => $id === 'tx-manual';
 
         $rows = (new MonthlyStatusReport())->build([$this->tx('tx-manual')], [], $isProcessed);
 
-        self::assertSame(StatusRow::STATUS_SKIPPED, $rows[0]->status);
+        self::assertSame(StatusRow::STATUS_GONE, $rows[0]->status);
     }
 
     public function testDateFallsBackToCreatedAtAndBulgarianDescriptionPrefixIsStripped(): void
@@ -222,5 +222,68 @@ final class MonthlyStatusReportTest extends TestCase
         self::assertSame(1, $summary[StatusRow::STATUS_MISSING]['count']);
         self::assertSame(0, $summary[StatusRow::STATUS_UNASSIGNED]['count']);
         self::assertSame([], $summary[StatusRow::STATUS_SKIPPED]['amounts']);
+        self::assertSame(0, $summary[StatusRow::STATUS_GONE]['count']);
+    }
+
+    public function testProcessedRowWithManualPaymentForResolvedClientIsSkipped(): void
+    {
+        $manual = $this->payment(['clientId' => 42, 'note' => 'платено на каса', 'providerName' => null, 'providerPaymentId' => null]);
+        $resolver = static fn (string $sender): ?int => 42;
+
+        $row = (new MonthlyStatusReport())->build(
+            [$this->tx('tx-m')],
+            [$manual],
+            static fn (string $id): bool => true,
+            $resolver,
+        )[0];
+
+        self::assertSame(StatusRow::STATUS_SKIPPED, $row->status);
+        self::assertSame(42, $row->clientId);
+    }
+
+    public function testProcessedRowWithoutPaymentIsGoneWithExpectedClient(): void
+    {
+        $resolver = static fn (string $sender): ?int => 42;
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-g')], [], static fn (string $id): bool => true, $resolver)[0];
+
+        self::assertSame(StatusRow::STATUS_GONE, $row->status);
+        self::assertSame(42, $row->clientId);
+    }
+
+    public function testManualPaymentOfAnotherClientDoesNotVerifyTheSkip(): void
+    {
+        $foreign = $this->payment(['clientId' => 7, 'note' => 'каса', 'providerName' => null, 'providerPaymentId' => null]);
+        $resolver = static fn (string $sender): ?int => 42;
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-g2')], [$foreign], static fn (string $id): bool => true, $resolver)[0];
+
+        self::assertSame(StatusRow::STATUS_GONE, $row->status);
+        self::assertSame(42, $row->clientId);
+    }
+
+    public function testPluginCreatedPaymentDoesNotCountAsManual(): void
+    {
+        // Same amount/date but created by the plugin for ANOTHER transfer.
+        $pluginPayment = $this->payment(['clientId' => 42, 'providerName' => 'Revolut', 'providerPaymentId' => 'tx-OTHER']);
+
+        $row = (new MonthlyStatusReport())->build(
+            [$this->tx('tx-g3')],
+            [$pluginPayment],
+            static fn (string $id): bool => true,
+            static fn (string $sender): ?int => 42,
+        )[0];
+
+        self::assertSame(StatusRow::STATUS_GONE, $row->status);
+    }
+
+    public function testUnresolvedSenderAcceptsAnyManualPaymentAsSkipReason(): void
+    {
+        $manual = $this->payment(['clientId' => 7, 'note' => 'каса', 'providerName' => null, 'providerPaymentId' => null]);
+
+        $row = (new MonthlyStatusReport())->build([$this->tx('tx-u')], [$manual], static fn (string $id): bool => true)[0];
+
+        self::assertSame(StatusRow::STATUS_SKIPPED, $row->status);
+        self::assertSame(7, $row->clientId);
     }
 }

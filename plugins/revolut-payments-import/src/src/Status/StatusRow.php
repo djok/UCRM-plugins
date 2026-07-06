@@ -16,6 +16,9 @@ final class StatusRow
     /** No imported payment, but the id is in processed.json — the duplicate
      * guard recognized a manually entered payment. */
     public const STATUS_SKIPPED = 'skipped';
+    /** Processed in the past but the payment no longer exists in UISP
+     * (deleted or lost) — re-importable from the status page. */
+    public const STATUS_GONE = 'gone';
     /** The plugin never handled this transaction. */
     public const STATUS_MISSING = 'missing';
 

@@ -35,9 +35,10 @@ final class MonthlyStatusReport
      * @param list<array<mixed>> $transactions raw Revolut transactions
      * @param list<array<mixed>> $payments raw UISP payments of the same month
      * @param callable(string):bool $isProcessed idempotency-store lookup
+     * @param callable(string):(int|null)|null $resolveClient sender → expected client id
      * @return list<StatusRow>
      */
-    public function build(array $transactions, array $payments, callable $isProcessed): array
+    public function build(array $transactions, array $payments, callable $isProcessed, ?callable $resolveClient = null): array
     {
         $byProviderId = [];
         $legacyPool = [];
@@ -106,22 +107,36 @@ final class MonthlyStatusReport
                 }
             }
 
+            $sender = $this->senderFromLeg($leg);
+
             $clientId = $payment !== null && isset($payment['clientId']) && $payment['clientId'] !== null
                 ? (int) $payment['clientId']
                 : null;
-            $status = match (true) {
-                $payment !== null && $clientId !== null => StatusRow::STATUS_ASSIGNED,
-                $payment !== null => StatusRow::STATUS_UNASSIGNED,
-                $isProcessed($id) => StatusRow::STATUS_SKIPPED,
-                default => StatusRow::STATUS_MISSING,
-            };
+            if ($payment !== null) {
+                $status = $clientId !== null ? StatusRow::STATUS_ASSIGNED : StatusRow::STATUS_UNASSIGNED;
+            } elseif ($isProcessed($id)) {
+                // Processed without an importable payment: either the duplicate
+                // guard saw a manually entered payment back then, or the imported
+                // payment was later deleted in UISP. Verify which is true.
+                $expectedClientId = $resolveClient !== null && $sender !== '' ? $resolveClient($sender) : null;
+                $manual = $this->findManualPayment($payments, $date, $amount, $expectedClientId);
+                if ($manual !== null) {
+                    $status = StatusRow::STATUS_SKIPPED;
+                    $clientId = isset($manual['clientId']) && $manual['clientId'] !== null ? (int) $manual['clientId'] : null;
+                } else {
+                    $status = StatusRow::STATUS_GONE;
+                    $clientId = $expectedClientId;
+                }
+            } else {
+                $status = StatusRow::STATUS_MISSING;
+            }
 
             $rows[] = new StatusRow(
                 transactionId: $id,
                 date: $date,
                 amount: $amount,
                 currency: (string) ($leg['currency'] ?? ''),
-                sender: $this->senderFromLeg($leg),
+                sender: $sender,
                 reference: (string) ($transaction['reference'] ?? ''),
                 status: $status,
                 clientId: $clientId,
@@ -150,6 +165,43 @@ final class MonthlyStatusReport
         return null;
     }
 
+    /**
+     * A manually entered payment (not created by this plugin) with the same
+     * amount and date — the duplicate guard's skip reason. When the expected
+     * client is known, only that client's payments count.
+     *
+     * @param list<array<mixed>> $payments
+     * @return array<mixed>|null
+     */
+    private function findManualPayment(array $payments, string $date, float $amount, ?int $expectedClientId): ?array
+    {
+        foreach ($payments as $payment) {
+            if (! is_array($payment)) {
+                continue;
+            }
+            if (($payment['providerName'] ?? null) === UcrmPaymentGateway::PROVIDER_NAME) {
+                continue;
+            }
+            if (str_starts_with((string) ($payment['note'] ?? ''), self::LEGACY_NOTE_PREFIX)) {
+                continue;
+            }
+            if (abs((float) ($payment['amount'] ?? 0.0) - $amount) >= self::AMOUNT_EPSILON) {
+                continue;
+            }
+            if (substr((string) ($payment['createdDate'] ?? ''), 0, 10) !== $date) {
+                continue;
+            }
+            $paymentClientId = isset($payment['clientId']) && $payment['clientId'] !== null ? (int) $payment['clientId'] : null;
+            if ($expectedClientId !== null && $paymentClientId !== $expectedClientId) {
+                continue;
+            }
+
+            return $payment;
+        }
+
+        return null;
+    }
+
     /** @param array<mixed> $leg */
     private function senderFromLeg(array $leg): string
     {
@@ -171,6 +223,7 @@ final class MonthlyStatusReport
             StatusRow::STATUS_ASSIGNED,
             StatusRow::STATUS_UNASSIGNED,
             StatusRow::STATUS_SKIPPED,
+            StatusRow::STATUS_GONE,
             StatusRow::STATUS_MISSING,
         ];
         $summary = [];
