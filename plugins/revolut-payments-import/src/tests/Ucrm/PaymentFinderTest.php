@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Tests\Ucrm;
 
 use PHPUnit\Framework\TestCase;
+use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\PaymentFinder;
 use RevolutPaymentsImport\Ucrm\UcrmClient;
 
@@ -72,5 +73,38 @@ final class PaymentFinderTest extends TestCase
 
         self::assertSame('2026-05-31', $ucrm->lastParams['createdDateFrom']);
         self::assertSame('2026-06-02', $ucrm->lastParams['createdDateTo']);
+    }
+
+    public function testStampedPaymentForOtherTransactionIsNotHeuristicallyMatched(): void
+    {
+        $stampedForOther = [
+            'id' => 20,
+            'providerPaymentId' => 'tx-OTHER',
+            'note' => 'Revolut: x',
+            'amount' => 8.86,
+            'createdDate' => '2026-06-15T10:00:00+03:00',
+        ];
+
+        $found = (new PaymentFinder($this->ucrm([$stampedForOther])))->findForStatementRow('tx-1', '2026-06-15', 8.86);
+
+        self::assertNull($found);
+    }
+
+    public function testAmbiguousLegacyCandidatesReturnNullAndLog(): void
+    {
+        $legacyA = ['id' => 21, 'providerPaymentId' => null, 'note' => 'Revolut: someone', 'amount' => 8.86, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+        $legacyB = ['id' => 22, 'providerPaymentId' => '', 'note' => 'Revolut: someone else', 'amount' => 8.86, 'createdDate' => '2026-06-15T11:00:00+03:00'];
+
+        /** @var list<string> $logLines */
+        $logLines = [];
+        $logger = new Logger(function (string $line) use (&$logLines): void {
+            $logLines[] = $line;
+        });
+
+        $found = (new PaymentFinder($this->ucrm([$legacyA, $legacyB]), $logger))->findForStatementRow('tx-1', '2026-06-15', 8.86);
+
+        self::assertNull($found);
+        self::assertNotSame([], $logLines);
+        self::assertStringContainsString('ambiguous', $logLines[0]);
     }
 }

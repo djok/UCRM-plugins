@@ -9,9 +9,12 @@ use RevolutPaymentsImport\Support\Logger;
 /**
  * Teaches UISP a client's sender identities: appends the sender IBAN and name
  * as extra bankAccounts entries so future payments match automatically (the
- * matcher compares normalized accountNumbers — Paysera model). Sends the
- * existing entries plus the new ones, deduped, which is safe whether the API
- * PATCH replaces or merges the collection. Best-effort: failures are logged.
+ * matcher compares normalized accountNumbers — Paysera model). Existing
+ * entries are resent verbatim (untouched, including any without an
+ * accountNumber) so a replace-semantics PATCH cannot lose data; a
+ * merge-semantics PATCH may duplicate them, which is harmless since
+ * dedupe-by-key prevents this plugin from ever repeating an entry itself.
+ * Best-effort: failures are logged.
  *
  * @see ClientMatcher::normalizeIban()
  */
@@ -31,11 +34,16 @@ final class ClientAccountLearner implements AccountLearner
             $existing = [];
             $payload = [];
             foreach (is_array($client['bankAccounts'] ?? null) ? $client['bankAccounts'] : [] as $account) {
-                if (! is_array($account) || ! isset($account['accountNumber'])) {
+                if (! is_array($account)) {
                     continue;
                 }
-                $existing[ClientMatcher::normalizeIban((string) $account['accountNumber'])] = true;
-                $payload[] = ['accountNumber' => (string) $account['accountNumber']];
+                if (isset($account['accountNumber'])) {
+                    $existing[ClientMatcher::normalizeIban((string) $account['accountNumber'])] = true;
+                }
+                // Preserve verbatim (id, name, … and entries without accountNumber too) —
+                // rebuilding as ['accountNumber' => ...] would drop other fields under
+                // replace-semantics PATCH.
+                $payload[] = $account;
             }
 
             $added = 0;

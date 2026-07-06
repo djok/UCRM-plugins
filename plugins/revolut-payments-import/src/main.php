@@ -115,10 +115,10 @@ try {
             $hash = md5($content);
             if ($config->statementDone() !== $hash) {
                 $rows = (new StatementCsvParser())->parse($content);
-                $ucrmPayments = new PaymentFinder($ucrm);
+                $ucrmPayments = new PaymentFinder($ucrm, $logger);
                 $reMatcher = new StatementReMatcher(
                     $ucrmPayments,
-                    new PaymentUpdater($ucrm),
+                    new PaymentUpdater($ucrm, $logger),
                     new ClientMatcher($ucrm),
                     new ClientAccountLearner($ucrm, $logger),
                     $logger,

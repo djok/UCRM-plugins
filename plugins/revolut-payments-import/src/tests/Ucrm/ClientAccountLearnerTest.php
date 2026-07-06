@@ -66,6 +66,27 @@ final class ClientAccountLearnerTest extends TestCase
         self::assertCount(2, $accounts);
     }
 
+    public function testExistingEntriesArePassedThroughVerbatim(): void
+    {
+        $ucrm = $this->ucrm([
+            'id' => 42,
+            'bankAccounts' => [
+                ['id' => 5, 'accountNumber' => 'BG47UNCR70001521149247', 'name' => 'Main'],
+                ['id' => 9],
+            ],
+        ]);
+
+        (new ClientAccountLearner($ucrm, $this->logger()))
+            ->learn(42, ['Hadzhiradevi Ood']);
+
+        self::assertCount(1, $ucrm->patched);
+        $accounts = $ucrm->patched[0]['data']['bankAccounts'];
+        self::assertSame(['id' => 5, 'accountNumber' => 'BG47UNCR70001521149247', 'name' => 'Main'], $accounts[0]);
+        self::assertSame(['id' => 9], $accounts[1]);
+        self::assertSame(['accountNumber' => 'Hadzhiradevi Ood'], $accounts[2]);
+        self::assertCount(3, $accounts);
+    }
+
     public function testNoPatchWhenEverythingAlreadyKnown(): void
     {
         $ucrm = $this->ucrm(['id' => 42, 'bankAccounts' => [['accountNumber' => 'HADZHIRADEVIOOD']]]);

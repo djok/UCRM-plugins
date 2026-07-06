@@ -81,6 +81,12 @@ only when the uploaded file's content changes, so upload a fresh export to
 re-run. If your UISP version rejects attaching payments via API, the log
 says so per payment and everything else still works.
 
+**Names are not unique.** Two clients whose senders share a name (common with
+personal names) would match whichever client the API lists first — verify
+before storing a common name as an identity, and prefer the IBAN entry from
+the statement when available. Learned identities are plain Bank-account rows
+on the client, so any mistake is visible and fixable right in UISP.
+
 ## Statement CSV import (full sender IBANs)
 The Business API does not always expose the sender's IBAN for incoming
 transfers, but Revolut's **account-statement CSV export** always does ("Sender

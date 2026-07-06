@@ -31,6 +31,16 @@ final class StatementReMatcher implements ReMatcher
     /** @param array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string} $row */
     public function reMatch(array $row): void
     {
+        try {
+            $this->doReMatch($row);
+        } catch (\Throwable $e) {
+            $this->logger->error(sprintf('Re-match: %s failed: %s', $row['id'], $e->getMessage()));
+        }
+    }
+
+    /** @param array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string} $row */
+    private function doReMatch(array $row): void
+    {
         $payment = $this->payments->findForStatementRow($row['id'], $row['date'], $row['amount']);
         if ($payment === null) {
             return;
@@ -49,7 +59,22 @@ final class StatementReMatcher implements ReMatcher
         $identities = array_values(array_filter([$row['senderIban'], $row['senderName']], static fn (string $v): bool => $v !== ''));
 
         if ($paymentClientId !== null) {
-            // Already attached (manually or by matching) — just learn identities.
+            // Already attached (manually or by matching). Learn only when the sender
+            // identity is unresolved or agrees with the payment's client — otherwise
+            // the identity belongs to a different client and learning it here would
+            // teach the plugin to misattribute that sender's future payments.
+            if ($clientId !== null && $clientId !== $paymentClientId) {
+                $this->logger->error(sprintf(
+                    'Re-match: %s — payment %d belongs to client %d but the sender identity resolves to client %d; not learning (conflict, review manually).',
+                    $row['id'],
+                    (int) ($payment['id'] ?? 0),
+                    $paymentClientId,
+                    $clientId,
+                ));
+
+                return;
+            }
+
             if ($this->learnSenders && $identities !== []) {
                 $this->learner->learn($paymentClientId, $identities);
             }

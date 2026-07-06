@@ -3,19 +3,26 @@ declare(strict_types=1);
 
 namespace RevolutPaymentsImport\Ucrm;
 
+use RevolutPaymentsImport\Support\Logger;
+
 /**
  * Locates the UISP payment created for a Revolut transaction: exact match by
  * providerPaymentId (stamped since v1.6.0), else the legacy heuristic (note
- * prefix + amount + date). The query window is padded ±1 day because payment
- * createdDate filtering happens in the UISP server's local timezone.
+ * prefix + amount + date), restricted to payments that are actually legacy
+ * (no providerPaymentId of their own). The query window is padded ±1 day
+ * because payment createdDate filtering happens in the UISP server's local
+ * timezone. If more than one legacy candidate matches, the match is
+ * ambiguous and null is returned rather than guessing.
  */
 final class PaymentFinder implements PaymentFinderInterface
 {
     private const AMOUNT_EPSILON = 0.005;
     private const LEGACY_NOTE_PREFIX = 'Revolut: ';
 
-    public function __construct(private readonly UcrmClient $ucrm)
-    {
+    public function __construct(
+        private readonly UcrmClient $ucrm,
+        private readonly ?Logger $logger = null,
+    ) {
     }
 
     /** @return array<mixed>|null */
@@ -29,7 +36,7 @@ final class PaymentFinder implements PaymentFinderInterface
             'limit' => 500,
         ]);
 
-        $legacyCandidate = null;
+        $legacyCandidates = [];
         foreach ($payments as $payment) {
             if (! is_array($payment)) {
                 continue;
@@ -41,15 +48,26 @@ final class PaymentFinder implements PaymentFinderInterface
                 return $payment;
             }
             if (
-                $legacyCandidate === null
+                (string) ($payment['providerPaymentId'] ?? '') === ''
                 && str_starts_with((string) ($payment['note'] ?? ''), self::LEGACY_NOTE_PREFIX)
                 && abs((float) ($payment['amount'] ?? 0.0) - $amount) < self::AMOUNT_EPSILON
                 && substr((string) ($payment['createdDate'] ?? ''), 0, 10) === $dateYmd
             ) {
-                $legacyCandidate = $payment;
+                $legacyCandidates[] = $payment;
             }
         }
 
-        return $legacyCandidate;
+        if (count($legacyCandidates) > 1) {
+            $this->logger?->info(sprintf(
+                'PaymentFinder: %s — multiple legacy candidates on %s for %.2f; skipping (ambiguous).',
+                $transactionId,
+                $dateYmd,
+                $amount,
+            ));
+
+            return null;
+        }
+
+        return $legacyCandidates[0] ?? null;
     }
 }

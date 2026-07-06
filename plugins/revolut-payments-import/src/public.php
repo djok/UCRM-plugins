@@ -486,7 +486,8 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
 
     $html .= '<script>document.addEventListener("click",function(e){'
         . 'var a=e.target.closest("a.copy-sender");if(!a)return;e.preventDefault();'
-        . 'navigator.clipboard.writeText(a.dataset.sender).then(function(){a.textContent="✓";setTimeout(function(){a.textContent="⧉";},1500);});'
+        . 'navigator.clipboard.writeText(a.dataset.sender).then(function(){a.textContent="✓";setTimeout(function(){a.textContent="⧉";},1500);})'
+        . '.catch(function(){window.prompt("Копирай името:",a.dataset.sender);});'
         . '});</script>';
 
     return $html;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Tests\Ucrm;
 
 use PHPUnit\Framework\TestCase;
+use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\PaymentUpdater;
 use RevolutPaymentsImport\Ucrm\UcrmClient;
 
@@ -60,5 +61,37 @@ final class PaymentUpdaterTest extends TestCase
         };
 
         self::assertFalse((new PaymentUpdater($ucrm))->attachClient(7, 42));
+    }
+
+    public function testAttachClientLogsFailureReasonWhenLoggerProvided(): void
+    {
+        $ucrm = new class implements UcrmClient {
+            public function get(string $endpoint, array $params = []): array
+            {
+                return [];
+            }
+
+            public function post(string $endpoint, array $data): array
+            {
+                return [];
+            }
+
+            public function patch(string $endpoint, array $data): array
+            {
+                throw new \RuntimeException('405 Method Not Allowed');
+            }
+        };
+
+        /** @var list<string> $logLines */
+        $logLines = [];
+        $logger = new Logger(function (string $line) use (&$logLines): void {
+            $logLines[] = $line;
+        });
+
+        $ok = (new PaymentUpdater($ucrm, $logger))->attachClient(7, 42);
+
+        self::assertFalse($ok);
+        self::assertNotSame([], $logLines);
+        self::assertStringContainsString('PATCH payments/7 failed', $logLines[0]);
     }
 }

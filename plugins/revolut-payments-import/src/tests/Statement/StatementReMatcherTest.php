@@ -168,8 +168,9 @@ final class StatementReMatcherTest extends TestCase
     {
         $finder = $this->finderReturning(['id' => 13, 'clientId' => 42]);
         $updater = $this->updaterSpy(true);
-        // Matched client differs (99) to prove learning binds to the payment's existing client (42)
-        $clients = $this->clientsByIban(['BG47UNCR70001521149247' => ['id' => 99]]);
+        // No client resolves from the sender identity here — proves learning still binds
+        // to the payment's existing client (42) even without an independent client match.
+        $clients = $this->clientsByIban([]);
         $learner = $this->learnerSpy();
 
         $reMatcher = new StatementReMatcher($finder, $updater, $clients, $learner, $this->logger(), true);
@@ -180,6 +181,26 @@ final class StatementReMatcherTest extends TestCase
 
         self::assertSame([], $updater->attached);
         self::assertSame([[42, ['BG47UNCR70001521149247', 'Hadzhiradevi Ood']]], $learner->learned);
+    }
+
+    public function testAlreadyAssignedPaymentWithConflictingIdentityDoesNotLearnAndLogsConflict(): void
+    {
+        $finder = $this->finderReturning(['id' => 14, 'clientId' => 42]);
+        $updater = $this->updaterSpy(true);
+        // Sender identity resolves to a DIFFERENT client (99) than the one already on the payment (42).
+        $clients = $this->clientsByIban(['BG47UNCR70001521149247' => ['id' => 99]]);
+        $learner = $this->learnerSpy();
+
+        $reMatcher = new StatementReMatcher($finder, $updater, $clients, $learner, $this->logger(), true);
+        $reMatcher->reMatch([
+            'id' => 'tx-5b', 'date' => '2026-06-30', 'amount' => 50.42, 'currency' => 'EUR',
+            'reference' => 'invoice 2606000802b', 'senderName' => 'Hadzhiradevi Ood', 'senderIban' => 'BG47UNCR70001521149247',
+        ]);
+
+        self::assertSame([], $updater->attached);
+        self::assertSame([], $learner->learned);
+        self::assertNotSame([], $this->logLines);
+        self::assertStringContainsString('conflict', $this->logLines[0]);
     }
 
     public function testAttachFailureLogsWarningButLearningStillRuns(): void
@@ -199,6 +220,30 @@ final class StatementReMatcherTest extends TestCase
         self::assertSame([[42, ['BG47UNCR70001521149247', 'Hadzhiradevi Ood']]], $learner->learned);
         self::assertNotSame([], $this->logLines);
         self::assertStringContainsString('ERROR', $this->logLines[0]);
+    }
+
+    public function testFinderExceptionIsIsolatedAndLogged(): void
+    {
+        $finder = new class implements PaymentFinderInterface {
+            public function findForStatementRow(string $transactionId, string $dateYmd, float $amount): ?array
+            {
+                throw new \RuntimeException('boom');
+            }
+        };
+        $updater = $this->updaterSpy(true);
+        $clients = $this->clientsByIban(['BG47UNCR70001521149247' => ['id' => 42]]);
+        $learner = $this->learnerSpy();
+
+        $reMatcher = new StatementReMatcher($finder, $updater, $clients, $learner, $this->logger(), true);
+        $reMatcher->reMatch([
+            'id' => 'tx-8', 'date' => '2026-06-30', 'amount' => 50.42, 'currency' => 'EUR',
+            'reference' => 'invoice 2606000805', 'senderName' => 'Hadzhiradevi Ood', 'senderIban' => 'BG47UNCR70001521149247',
+        ]);
+
+        self::assertSame([], $updater->attached);
+        self::assertSame([], $learner->learned);
+        self::assertNotSame([], $this->logLines);
+        self::assertStringContainsString('failed', $this->logLines[0]);
     }
 
     public function testLearnSendersDisabledAttachesButNeverLearns(): void
