@@ -43,6 +43,22 @@ plugin log after saving the configuration, and on the plugin's Public URL with
 accounts are ignored. The filter applies to webhooks, reconciliation, and
 backfill alike.
 
+## Monthly status page (reconciliation overview)
+Open the plugin's Public URL with `?status=1` (UCRM admin login required) to
+see every incoming Revolut transfer for a selected month — current by default,
+any of the last 12 via the dropdown (`&month=YYYY-MM`) — with its status in
+UCRM/UISP:
+- ✅ recorded and attached to a client (linked),
+- ⚠️ recorded but unassigned (waiting for manual attachment),
+- ⏭ skipped by the manual-payment duplicate guard,
+- ❌ missing from UCRM (never imported).
+Per-status counts and per-currency totals are shown above the table. Matching
+uses the payment's `providerName`/`providerPaymentId` (stamped on every payment
+the plugin creates since v1.6.0) and falls back to amount + date + `Revolut: `
+note matching for payments imported by older versions. The page UI is in
+Bulgarian. The transfer list honors the "Revolut accounts to import from"
+filter — it shows exactly what the plugin imports.
+
 ## Statement CSV import (full sender IBANs)
 The Business API does not always expose the sender's IBAN for incoming
 transfers, but Revolut's **account-statement CSV export** always does ("Sender
