@@ -52,8 +52,14 @@ The page shows every incoming Revolut transfer for a selected month — current
 by default, any of the last 12 via the dropdown — with its status in UCRM/UISP:
 - ✅ recorded and attached to a client (linked),
 - ⚠️ recorded but unassigned (waiting for manual attachment),
-- ⏭ skipped by the manual-payment duplicate guard,
+- ⏭ skipped because the matched client really has a manual payment with the
+  same amount and date (verified against the month's payments),
+- 🗑 processed in the past but the payment no longer exists in UISP (deleted
+  or lost) — the row shows the client it would be attached to and offers an
+  admin-only **„Добави наново"** button that re-imports the transaction from
+  Revolut with its original date and automatic sender matching,
 - ❌ missing from UCRM (never imported).
+Deleted payments are never re-imported automatically — only via the button.
 Per-status counts and per-currency totals are shown above the table. Matching
 uses the payment's `providerName`/`providerPaymentId` (stamped on every payment
 the plugin creates since v1.6.0) and falls back to amount + date + `Revolut: `
