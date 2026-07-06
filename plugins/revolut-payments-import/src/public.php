@@ -49,6 +49,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['accounts']))
     return;
 }
 
+// Admin-only diagnostic: dumps the exact JSON the Revolut API returns for one
+// transaction (?raw=1&tx=<id>), incl. every counterparty lookup — to inspect
+// whether/where sender account data is exposed.
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['raw'])) {
+    handleRawPage($config, $logger);
+
+    return;
+}
+
 // Admin-only status page: monthly reconciliation overview — every incoming
 // Revolut transfer of the selected month with its UISP payment status. It is
 // the default GET page so the UISP menu item (manifest "menu", iframe target)
@@ -80,6 +89,11 @@ if (! $verifier->isValid($rawBody, (string) $timestamp, (string) $signature, $si
 
     return;
 }
+
+// Diagnostic (v1.7.1): keep the authentic raw payload in the plugin log so
+// what Revolut *sends* can be compared against what GET /transaction returns
+// (sender-IBAN investigation). Remove once the question is settled.
+$logger->info('Webhook raw payload: ' . $rawBody);
 
 $event = json_decode($rawBody, true);
 if (! is_array($event)) {
@@ -454,7 +468,8 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
                 : $name;
         }
         $cells .= '<tr class="table-' . $badge . '">'
-            . '<td>' . htmlspecialchars($row->date) . '</td>'
+            . '<td><a href="?raw=1&amp;tx=' . htmlspecialchars(rawurlencode($row->transactionId)) . '" title="Виж raw JSON от Revolut API">'
+            . htmlspecialchars($row->date) . '</a></td>'
             . '<td class="text-right">' . number_format($row->amount, 2, '.', ' ') . '</td>'
             . '<td>' . htmlspecialchars($row->currency) . '</td>'
             . '<td>' . htmlspecialchars($row->sender) . '</td>'
@@ -470,6 +485,129 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
         . '</table></div></div>';
 
     return $html;
+}
+
+/**
+ * Diagnostic page (admin-only): shows the exact JSON the Revolut API returns
+ * for one transaction — the transaction object and every counterparty lookup
+ * its legs reference — so sender-data coverage can be inspected and shared.
+ */
+function handleRawPage(PluginConfig $config, Logger $logger): void
+{
+    $crmUrl = '';
+    try {
+        $crmUrl = rtrim((string) (UcrmOptionsManager::create()->loadOptions()->ucrmPublicUrl ?? ''), '/');
+    } catch (\Throwable $e) {
+        $crmUrl = '';
+    }
+
+    $user = null;
+    try {
+        $user = UcrmSecurity::create()->getUser();
+    } catch (\Throwable $e) {
+        $user = null;
+    }
+    if ($user === null || $user->isClient) {
+        http_response_code(403);
+        renderUispPage('Забранен достъп', '<p>Влезте в UISP като администратор и презаредете страницата.</p>', $crmUrl);
+
+        return;
+    }
+
+    if ($config->refreshToken() === null) {
+        renderUispPage('Не е свързано', '<p>Първо завършете оторизацията към Revolut (вижте лога на плъгина).</p>', $crmUrl);
+
+        return;
+    }
+
+    $txId = isset($_GET['tx']) && is_string($_GET['tx']) ? trim($_GET['tx']) : '';
+
+    $form = '<div class="card mb-3"><div class="card-body py-2">'
+        . '<form method="get" class="form-inline">'
+        . '<input type="hidden" name="raw" value="1">'
+        . '<label class="mr-2 mb-0" for="frm-tx"><small>Transaction id:</small></label>'
+        . '<input type="text" name="tx" id="frm-tx" class="form-control form-control-sm mr-2" size="40" value="' . htmlspecialchars($txId) . '">'
+        . '<button type="submit" class="btn btn-primary btn-sm">Покажи raw</button>'
+        . '<span class="ml-3"><a href="?status=1">Към статус справката</a></span>'
+        . '</form></div></div>';
+
+    if ($txId === '') {
+        renderUispPage(
+            'Revolut raw транзакция',
+            $form . '<p>Въведете transaction id — или отворете тази страница от линка върху датата в статус справката.</p>',
+            $crmUrl,
+        );
+
+        return;
+    }
+
+    try {
+        $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
+        $tokenProvider = new TokenProvider(
+            new RevolutClient(new Client(), $config->environment()),
+            $config,
+            new JwtClientAssertion(),
+            $privateKey,
+            time(),
+        );
+        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
+
+        $sections = '';
+        $transaction = [];
+        try {
+            $transaction = $revolut->getJson('/api/1.0/transaction/' . rawurlencode($txId));
+            $sections .= rawJsonSection('GET /api/1.0/transaction/' . $txId, $transaction);
+        } catch (\Throwable $e) {
+            $sections .= rawErrorSection('GET /api/1.0/transaction/' . $txId, $e);
+        }
+
+        // Every counterparty the legs reference — where the sender IBAN would
+        // live if Revolut exposed it for this transfer.
+        $legs = is_array($transaction['legs'] ?? null) ? $transaction['legs'] : [];
+        $seenCounterparties = [];
+        foreach ($legs as $leg) {
+            $counterpartyId = is_array($leg) ? ($leg['counterparty']['id'] ?? null) : null;
+            if (! is_string($counterpartyId) || $counterpartyId === '' || isset($seenCounterparties[$counterpartyId])) {
+                continue;
+            }
+            $seenCounterparties[$counterpartyId] = true;
+            try {
+                $counterparty = $revolut->getJson('/api/1.0/counterparty/' . rawurlencode($counterpartyId));
+                $sections .= rawJsonSection('GET /api/1.0/counterparty/' . $counterpartyId, $counterparty);
+            } catch (\Throwable $e) {
+                $sections .= rawErrorSection('GET /api/1.0/counterparty/' . $counterpartyId, $e);
+            }
+        }
+        if ($legs !== [] && $seenCounterparties === []) {
+            $sections .= '<p class="text-muted">Нито един leg няма counterparty — за този превод Revolut не предоставя обект със сметката на подателя.</p>';
+        }
+
+        renderUispPage('Revolut raw — ' . $txId, $form . $sections, $crmUrl);
+    } catch (\Throwable $e) {
+        $logger->error('Raw page error: ' . $e->getMessage());
+        http_response_code(500);
+        renderUispPage('Грешка', '<p>Заявката не можа да бъде изпълнена. Проверете лога на плъгина в UISP.</p>', $crmUrl);
+    }
+}
+
+/** @param array<mixed> $payload decoded API response, re-rendered as pretty JSON */
+function rawJsonSection(string $title, array $payload): string
+{
+    $json = (string) json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    return '<div class="card mb-3"><div class="card-header py-2"><code>' . htmlspecialchars($title) . '</code></div>'
+        . '<div class="card-body p-0"><textarea readonly class="form-control border-0" rows="'
+        . min(30, substr_count($json, "\n") + 2)
+        . '" style="font-family:monospace;font-size:.85rem">'
+        . htmlspecialchars($json)
+        . '</textarea></div></div>';
+}
+
+/** Admin-only diagnostic output — the API error is the information sought. */
+function rawErrorSection(string $title, \Throwable $e): string
+{
+    return '<div class="card mb-3 border-danger"><div class="card-header py-2"><code>' . htmlspecialchars($title) . '</code></div>'
+        . '<div class="card-body"><pre class="mb-0 text-danger" style="white-space:pre-wrap">' . htmlspecialchars($e->getMessage()) . '</pre></div></div>';
 }
 
 /**
