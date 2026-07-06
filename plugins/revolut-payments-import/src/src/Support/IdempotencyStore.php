@@ -47,8 +47,11 @@ final class IdempotencyStore
         if (isset($this->processed[$id])) {
             return;
         }
-        $this->processed[$id] = true;
-        $this->flush();
+        $this->mutate(static function (array $map) use ($id): array {
+            $map[$id] = true;
+
+            return $map;
+        });
     }
 
     /**
@@ -61,21 +64,82 @@ final class IdempotencyStore
         if (! isset($this->processed[$id])) {
             return;
         }
-        unset($this->processed[$id]);
-        $this->flush();
+        $this->mutate(static function (array $map) use ($id): array {
+            unset($map[$id]);
+
+            return $map;
+        });
     }
 
-    private function flush(): void
+    /**
+     * Applies a mutation to the CURRENT on-disk contents under an exclusive
+     * lock, so concurrent writers (webhook, cron, and the status page's
+     * re-import action all construct their own IdempotencyStore instance)
+     * merge their changes instead of clobbering each other with a stale
+     * in-memory snapshot. Read-modify-write happens entirely while the lock
+     * is held; $this->processed is refreshed from the merged result.
+     *
+     * @param callable(array<string,true>):array<string,true> $mutator
+     */
+    private function mutate(callable $mutator): void
     {
-        $json = json_encode(array_keys($this->processed), JSON_UNESCAPED_SLASHES);
-        if ($json === false) {
-            throw new \RuntimeException('Failed to encode idempotency store.');
-        }
         if (! is_dir(dirname($this->path))) {
             mkdir(dirname($this->path), 0770, true);
         }
-        if (file_put_contents($this->path, $json) === false) {
-            throw new \RuntimeException('Failed to write idempotency store to ' . $this->path);
+
+        $handle = fopen($this->path, 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException('Failed to open idempotency store at ' . $this->path);
         }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Failed to lock idempotency store at ' . $this->path);
+            }
+
+            try {
+                $contents = stream_get_contents($handle);
+                $current = $this->decode($contents === false ? '' : $contents);
+
+                $map = $mutator($current);
+
+                $json = json_encode(array_keys($map), JSON_UNESCAPED_SLASHES);
+                if ($json === false) {
+                    throw new \RuntimeException('Failed to encode idempotency store.');
+                }
+
+                if (! ftruncate($handle, 0)) {
+                    throw new \RuntimeException('Failed to truncate idempotency store at ' . $this->path);
+                }
+                rewind($handle);
+                if (fwrite($handle, $json) === false) {
+                    throw new \RuntimeException('Failed to write idempotency store to ' . $this->path);
+                }
+                fflush($handle);
+
+                $this->processed = $map;
+            } finally {
+                flock($handle, LOCK_UN);
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /** @return array<string,true> */
+    private function decode(string $contents): array
+    {
+        $decoded = json_decode($contents, true);
+        if (! is_array($decoded)) {
+            return [];
+        }
+        $map = [];
+        foreach ($decoded as $id) {
+            if (is_string($id)) {
+                $map[$id] = true;
+            }
+        }
+
+        return $map;
     }
 }

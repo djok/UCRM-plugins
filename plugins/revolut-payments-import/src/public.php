@@ -355,7 +355,9 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
 
         $flash = isset($_GET['reimported'])
             ? '<div class="alert alert-success py-2">Транзакцията беше обработена наново — вижте статуса на реда по-долу.</div>'
-            : '';
+            : (isset($_GET['already'])
+                ? '<div class="alert alert-info py-2">Плащането вече съществува — няма какво да се добавя.</div>'
+                : '');
 
         renderUispPage(
             'Revolut преводи — ' . monthLabelBg($window->ym),
@@ -413,7 +415,19 @@ function handleReimportAction(PluginConfig $config, Logger $logger): void
         $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
         $transaction = (new TransactionsApi($revolut))->getTransaction($txId);
         if ($transaction === null) {
+            http_response_code(404);
             renderHtml('Не е намерена', 'Revolut не върна такава транзакция. Проверете лога на плъгина.');
+
+            return;
+        }
+
+        if (alreadyImported($transaction, $txId, SdkUcrmClient::create())) {
+            $logger->info('Re-import: transaction ' . $txId . ' already has a UISP payment — skipping (double-submit or stale token).');
+            header(
+                'Location: ?status=1&already=1' . ($month !== '' ? '&month=' . rawurlencode($month) : ''),
+                true,
+                303,
+            );
 
             return;
         }
@@ -445,6 +459,42 @@ function statusActionToken(string $txId, PluginConfig $config): ?string
     }
 
     return hash_hmac('sha256', 'reimport:' . $txId, $secret);
+}
+
+/**
+ * Guards handleReimportAction() against duplicating a payment. Neutralizes
+ * two ways the re-import action could otherwise run twice for the same
+ * transaction: a double-submit (user double-clicks the button before the
+ * page navigates away) and a stale-token replay (an old status page tab, or
+ * a bookmarked/replayed POST, still carrying a previously-valid HMAC token
+ * for a transaction that has meanwhile already been re-imported by someone
+ * else). Matching is EXACT by provider id only — no amount/note heuristic —
+ * so this can never produce a false positive that blocks a legitimate
+ * re-import.
+ *
+ * @param array<mixed> $transaction
+ */
+function alreadyImported(array $transaction, string $txId, UcrmClient $ucrm): bool
+{
+    $date = substr((string) ($transaction['completed_at'] ?? $transaction['created_at'] ?? ''), 0, 10);
+
+    $params = ['limit' => 500];
+    if ($date !== '') {
+        $params['createdDateFrom'] = (new \DateTimeImmutable($date . 'T00:00:00Z'))->modify('-1 day')->format('Y-m-d');
+        $params['createdDateTo'] = (new \DateTimeImmutable($date . 'T00:00:00Z'))->modify('+1 day')->format('Y-m-d');
+    }
+
+    foreach ($ucrm->get('payments', $params) as $payment) {
+        if (
+            is_array($payment)
+            && ($payment['providerName'] ?? null) === UcrmPaymentGateway::PROVIDER_NAME
+            && (string) ($payment['providerPaymentId'] ?? '') === $txId
+        ) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -621,6 +671,9 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
         . 'var a=e.target.closest("a.copy-sender");if(!a)return;e.preventDefault();'
         . 'navigator.clipboard.writeText(a.dataset.sender).then(function(){a.textContent="✓";setTimeout(function(){a.textContent="⧉";},1500);})'
         . '.catch(function(){window.prompt("Копирай името:",a.dataset.sender);});'
+        . '});'
+        . 'document.addEventListener("submit",function(e){'
+        . 'var b=e.target.querySelector("button[type=submit]");if(b){b.disabled=true;b.textContent="…";}'
         . '});</script>';
 
     return $html;

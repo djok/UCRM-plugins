@@ -72,4 +72,17 @@ final class IdempotencyStoreTest extends TestCase
 
         self::assertTrue($store->isProcessed('tx-1'));
     }
+
+    public function testConcurrentInstancesDoNotLoseEachOthersWrites(): void
+    {
+        $a = new IdempotencyStore($this->path);
+        $b = new IdempotencyStore($this->path);
+
+        $a->markProcessed('tx-a');
+        $b->markProcessed('tx-b');
+
+        $reloaded = new IdempotencyStore($this->path);
+        self::assertTrue($reloaded->isProcessed('tx-a'));
+        self::assertTrue($reloaded->isProcessed('tx-b'));
+    }
 }
