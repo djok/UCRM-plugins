@@ -15,7 +15,7 @@ use RevolutPaymentsImport\Support\Logger;
  *
  * @see ClientMatcher::normalizeIban()
  */
-final class ClientAccountLearner
+final class ClientAccountLearner implements AccountLearner
 {
     public function __construct(
         private readonly UcrmClient $ucrm,

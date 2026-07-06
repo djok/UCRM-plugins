@@ -9,7 +9,7 @@ namespace RevolutPaymentsImport\Ucrm;
  * prefix + amount + date). The query window is padded ±1 day because payment
  * createdDate filtering happens in the UISP server's local timezone.
  */
-final class PaymentFinder
+final class PaymentFinder implements PaymentFinderInterface
 {
     private const AMOUNT_EPSILON = 0.005;
     private const LEGACY_NOTE_PREFIX = 'Revolut: ';

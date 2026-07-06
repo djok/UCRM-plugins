@@ -8,7 +8,7 @@ namespace RevolutPaymentsImport\Ucrm;
  * from creation (UcrmPaymentGateway) and intentionally non-throwing: some
  * UISP versions may not allow PATCHing payments — callers log and move on.
  */
-final class PaymentUpdater
+final class PaymentUpdater implements PaymentUpdaterInterface
 {
     public function __construct(private readonly UcrmClient $ucrm)
     {
