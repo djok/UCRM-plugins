@@ -195,6 +195,16 @@ final class MonthlyStatusReportTest extends TestCase
         );
     }
 
+    public function testDuplicatedBoundaryTransactionYieldsOneRow(): void
+    {
+        $tx = $this->tx('tx-dup');
+
+        $rows = (new MonthlyStatusReport())->build([$tx, $tx], [$this->payment()], self::notProcessed());
+
+        self::assertCount(1, $rows);
+        self::assertSame(StatusRow::STATUS_ASSIGNED, $rows[0]->status);
+    }
+
     public function testSummarizeCountsAndSumsPerCurrency(): void
     {
         $rows = [

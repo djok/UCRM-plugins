@@ -311,14 +311,25 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
     }
 }
 
-/** @return list<array<mixed>> all UISP payments created within [$fromDate, $toDate] */
+/**
+ * All UISP payments created within [$fromDate, $toDate], padded by one day on
+ * each side: the month window is UTC while UCRM filters createdDate in the
+ * server's local timezone, so a transfer completed near UTC midnight carries a
+ * payment dated in the neighboring day. Padding cannot create false matches —
+ * exact matching is by provider id and the heuristic requires date equality.
+ *
+ * @return list<array<mixed>>
+ */
 function fetchMonthPayments(UcrmClient $ucrm, string $fromDate, string $toDate): array
 {
+    $paddedFrom = (new \DateTimeImmutable($fromDate . 'T00:00:00Z'))->modify('-1 day')->format('Y-m-d');
+    $paddedTo = (new \DateTimeImmutable($toDate . 'T00:00:00Z'))->modify('+1 day')->format('Y-m-d');
+
     $all = [];
     for ($offset = 0; $offset < 100000; $offset += 500) {
         $page = array_values(array_filter($ucrm->get('payments', [
-            'createdDateFrom' => $fromDate,
-            'createdDateTo' => $toDate,
+            'createdDateFrom' => $paddedFrom,
+            'createdDateTo' => $paddedTo,
             'limit' => 500,
             'offset' => $offset,
         ]), 'is_array'));

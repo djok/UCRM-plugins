@@ -57,6 +57,7 @@ final class MonthlyStatusReport
         }
 
         $rows = [];
+        $seen = [];
         foreach ($transactions as $transaction) {
             if (! is_array($transaction)) {
                 continue;
@@ -65,6 +66,10 @@ final class MonthlyStatusReport
             if (! is_string($id) || $id === '') {
                 continue;
             }
+            if (isset($seen[$id])) {
+                continue; // listAllTransactions may duplicate a pagination-boundary item
+            }
+            $seen[$id] = true;
             if (($transaction['state'] ?? null) !== 'completed') {
                 continue;
             }
