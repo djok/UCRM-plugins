@@ -48,9 +48,27 @@ final class StatementCsvParser
             return $i !== null && isset($row[$i]) ? trim((string) $row[$i]) : '';
         };
 
-        $rows = [];
+        $raw = [];
+        $rowsPerId = [];
         while (($row = fgetcsv($stream)) !== false) {
             if (! is_array($row) || count($row) < 2) {
+                continue;
+            }
+            $raw[] = $row;
+            $rowId = $cell($row, 'ID');
+            if ($rowId !== '') {
+                $rowsPerId[$rowId] = ($rowsPerId[$rowId] ?? 0) + 1;
+            }
+        }
+        fclose($stream);
+
+        $rows = [];
+        foreach ($raw as $row) {
+            // A customer transfer is one leg, so one row. An ID listed more than
+            // once is a move between our own accounts (e.g. the hold/"Release"
+            // during an account seizure: -X on the hold pocket, +X on the main
+            // account) — never a customer payment.
+            if (($rowsPerId[$cell($row, 'ID')] ?? 0) > 1) {
                 continue;
             }
             $type = strtoupper($cell($row, 'Type'));
@@ -80,7 +98,6 @@ final class StatementCsvParser
                 'senderIban' => $cell($row, 'Sender account'),
             ];
         }
-        fclose($stream);
 
         return $rows;
     }

@@ -371,6 +371,52 @@ final class EventProcessorTest extends TestCase
         self::assertSame(1, $recorder->records[0]->clientId);
     }
 
+    public function testInternalReleaseBetweenOwnAccountsIsNotAPayment(): void
+    {
+        // Revolut's hold/release during an account seizure: money moves from the
+        // hold pocket back to Public Invoices. Two legs, one negative on our own
+        // account — an internal move, never a customer payment.
+        $release = [
+            'id' => 'tx-rel',
+            'type' => 'transfer',
+            'state' => 'completed',
+            'completed_at' => '2026-09-07T06:21:47.906015Z',
+            'reference' => null,
+            'legs' => [
+                ['account_id' => 'acc-hold', 'amount' => -288.87, 'currency' => 'EUR', 'description' => 'Release'],
+                ['account_id' => 'acc-main', 'amount' => 288.87, 'currency' => 'EUR', 'description' => null],
+            ],
+        ];
+        $recorder = new RecordingRecorder();
+        $processor = $this->makeProcessor(['tx-rel' => $release], [], null, $recorder);
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-rel']]);
+        self::assertCount(0, $recorder->records, 'an internal release must never become a payment');
+
+        // Marked terminal: a replay of the same id records nothing either.
+        $processor->processTransaction($release);
+        self::assertCount(0, $recorder->records);
+    }
+
+    public function testInternalReleaseIsIgnoredEvenWhenItsAccountIsSelected(): void
+    {
+        $release = [
+            'id' => 'tx-rel2',
+            'type' => 'transfer',
+            'state' => 'completed',
+            'legs' => [
+                ['account_id' => 'acc-hold', 'amount' => -12.44, 'currency' => 'EUR', 'description' => 'Release'],
+                ['account_id' => 'acc-main', 'amount' => 12.44, 'currency' => 'EUR'],
+            ],
+        ];
+        $recorder = new RecordingRecorder();
+        $processor = $this->makeProcessor(['tx-rel2' => $release], [], ['id' => 5], $recorder, ['acc-main']);
+
+        $processor->processTransaction($release);
+
+        self::assertCount(0, $recorder->records);
+    }
+
     public function testDeclinedTransactionIsTerminalAndMarkedProcessed(): void
     {
         $recorder = new RecordingRecorder();

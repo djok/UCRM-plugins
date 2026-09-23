@@ -112,6 +112,24 @@ final class StatementReMatcherTest extends TestCase
         self::assertSame([[42, ['BG47UNCR70001521149247', 'Hadzhiradevi Ood']]], $learner->learned);
     }
 
+    public function testReMatchReportsFailureWhenAttachFailsAndSuccessOtherwise(): void
+    {
+        $row = [
+            'id' => 'tx-9', 'date' => '2026-06-30', 'amount' => 50.42, 'currency' => 'EUR',
+            'reference' => 'x', 'senderName' => 'Hadzhiradevi Ood', 'senderIban' => 'BG47UNCR70001521149247',
+        ];
+        $clients = $this->clientsByIban(['BG47UNCR70001521149247' => ['id' => 42]]);
+
+        $failing = new StatementReMatcher($this->finderReturning(['id' => 7, 'clientId' => null]), $this->updaterSpy(false), $clients, $this->learnerSpy(), $this->logger(), false);
+        self::assertFalse($failing->reMatch($row), 'a failed attach must be reported so the statement is retried');
+
+        $ok = new StatementReMatcher($this->finderReturning(['id' => 7, 'clientId' => null]), $this->updaterSpy(true), $clients, $this->learnerSpy(), $this->logger(), false);
+        self::assertTrue($ok->reMatch($row));
+
+        $nothingToDo = new StatementReMatcher($this->finderReturning(null), $this->updaterSpy(false), $clients, $this->learnerSpy(), $this->logger(), false);
+        self::assertTrue($nothingToDo->reMatch($row), 'no payment found is not a failure');
+    }
+
     public function testPaymentNotFoundDoesNothing(): void
     {
         $finder = $this->finderReturning(null);

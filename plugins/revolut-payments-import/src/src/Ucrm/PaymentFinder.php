@@ -18,6 +18,8 @@ final class PaymentFinder implements PaymentFinderInterface
 {
     private const AMOUNT_EPSILON = 0.005;
     private const LEGACY_NOTE_PREFIX = 'Revolut: ';
+    private const PAGE_SIZE = 500;
+    private const MAX_PAYMENTS_SCANNED = 20000;
 
     public function __construct(
         private readonly UcrmClient $ucrm,
@@ -30,11 +32,19 @@ final class PaymentFinder implements PaymentFinderInterface
     {
         $from = (new \DateTimeImmutable($dateYmd . 'T00:00:00Z'))->modify('-1 day')->format('Y-m-d');
         $to = (new \DateTimeImmutable($dateYmd . 'T00:00:00Z'))->modify('+1 day')->format('Y-m-d');
-        $payments = $this->ucrm->get('payments', [
-            'createdDateFrom' => $from,
-            'createdDateTo' => $to,
-            'limit' => 500,
-        ]);
+        $payments = [];
+        for ($offset = 0; $offset < self::MAX_PAYMENTS_SCANNED; $offset += self::PAGE_SIZE) {
+            $page = array_values(array_filter($this->ucrm->get('payments', [
+                'createdDateFrom' => $from,
+                'createdDateTo' => $to,
+                'limit' => self::PAGE_SIZE,
+                'offset' => $offset,
+            ]), 'is_array'));
+            $payments = array_merge($payments, $page);
+            if (count($page) < self::PAGE_SIZE) {
+                break;
+            }
+        }
 
         $legacyCandidates = [];
         foreach ($payments as $payment) {

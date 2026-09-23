@@ -35,6 +35,17 @@ final class PluginConfigTest extends TestCase
         return PluginConfig::fromFile($path);
     }
 
+    public function testStatementRetryStateDefaultsAndReads(): void
+    {
+        $empty = $this->config([]);
+        self::assertNull($empty->statementRetryHash());
+        self::assertSame(0, $empty->statementRetryCount());
+
+        $retrying = $this->config(['statementRetryHash' => 'abc123', 'statementRetryCount' => '3']);
+        self::assertSame('abc123', $retrying->statementRetryHash());
+        self::assertSame(3, $retrying->statementRetryCount());
+    }
+
     public function testReadsScalarValues(): void
     {
         $config = PluginConfig::fromFile($this->path);

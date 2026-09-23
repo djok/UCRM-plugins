@@ -5,6 +5,7 @@ namespace RevolutPaymentsImport\Webhook;
 
 use RevolutPaymentsImport\Matching\ClientRepository;
 use RevolutPaymentsImport\Revolut\CounterpartySource;
+use RevolutPaymentsImport\Revolut\TransactionShape;
 use RevolutPaymentsImport\Revolut\TransactionSource;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
@@ -123,6 +124,15 @@ final class EventProcessor
         if ($leg === null) {
             $this->idempotency->markProcessed($id); // terminal: outgoing/zero
             $this->logger->info(sprintf('Transaction %s has no incoming leg; ignored.', $id));
+
+            return;
+        }
+
+        if (TransactionShape::isInternalTransfer($transaction)) {
+            // terminal: money moved between our own accounts (e.g. Revolut's
+            // hold/release during a seizure) — the funds were already received once.
+            $this->idempotency->markProcessed($id);
+            $this->logger->info(sprintf('Transaction %s is an internal transfer between own accounts; ignored.', $id));
 
             return;
         }

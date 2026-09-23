@@ -31,6 +31,8 @@ use RevolutPaymentsImport\Webhook\EventProcessor;
 
 chdir(__DIR__);
 
+const STATEMENT_MAX_ATTEMPTS = 5;
+
 $logManager = PluginLogManager::create();
 $logger = new Logger([$logManager, 'appendLog']);
 $config = PluginConfig::fromFile(__DIR__ . '/data/config.json');
@@ -138,8 +140,11 @@ if ($config->refreshToken() !== null && $config->webhookId() !== null) {
 }
 
 // 3) Statement CSV import — needs only UISP and the uploaded file, so it runs
-// EVERY time regardless of Revolut's health. Re-runs only when the file changes.
-$runner->run('statement-import', function () use ($config, $ucrm, $logger): void {
+// EVERY time regardless of Revolut's health. Re-runs only when the file changes,
+// or (up to STATEMENT_MAX_ATTEMPTS) while attaching existing payments keeps failing.
+// When Revolut is reachable, each new row is verified against the API so an
+// internal hold/"Release" move is never imported as a customer payment.
+$runner->run('statement-import', function () use ($config, $ucrm, $logger, $transactionsApi): void {
     $statementFile = $config->statementCsv();
     if ($statementFile === null) {
         return;
@@ -173,11 +178,40 @@ $runner->run('statement-import', function () use ($config, $ucrm, $logger): void
         new IdempotencyStore(__DIR__ . '/data/processed.json'),
         $logger,
         $reMatcher,
+        $transactionsApi,
     );
     $imported = $importer->import($rows);
-    $config->set('statementDone', $hash);
-    $config->save();
     $logger->info(sprintf('main: statement import — %d row(s) parsed, %d payment(s) imported.', count($rows), $imported));
+
+    // A failed attach is safe to retry (the re-matcher skips payments that already
+    // have a client), so keep the file pending instead of marking it done — but
+    // bounded, so a permanently failing attach cannot re-run the file forever.
+    $failures = $importer->reMatchFailures();
+    $attempt = ($config->statementRetryHash() === $hash ? $config->statementRetryCount() : 0) + 1;
+    if ($failures > 0 && $attempt < STATEMENT_MAX_ATTEMPTS) {
+        $config->set('statementRetryHash', $hash);
+        $config->set('statementRetryCount', (string) $attempt);
+        $config->save();
+        $logger->error(sprintf(
+            'main: statement import — %d attach(es) failed; the statement will be retried on the next run (attempt %d/%d).',
+            $failures,
+            $attempt,
+            STATEMENT_MAX_ATTEMPTS,
+        ));
+
+        return;
+    }
+    if ($failures > 0) {
+        $logger->error(sprintf(
+            'main: statement import — %d attach(es) still failing after %d attempts; giving up on this file — attach those payments manually.',
+            $failures,
+            $attempt,
+        ));
+    }
+    $config->set('statementDone', $hash);
+    $config->set('statementRetryHash', null);
+    $config->set('statementRetryCount', null);
+    $config->save();
 });
 
 /**

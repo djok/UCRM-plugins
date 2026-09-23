@@ -37,8 +37,11 @@ final class PaymentUpdaterTest extends TestCase
         $ok = (new PaymentUpdater($ucrm))->attachClient(7, 42);
 
         self::assertTrue($ok);
-        self::assertSame('payments/7', $ucrm->patched[0]['endpoint']);
-        self::assertSame(['clientId' => 42], $ucrm->patched[0]['data']);
+        // UISP rejects clientId on PATCH payments/{id} (422 "This field is not
+        // allowed") — an unmatched payment is attached via the dedicated endpoint.
+        // No receipt e-mail is sent to the customer on a background re-match.
+        self::assertSame('payments/7/attach', $ucrm->patched[0]['endpoint']);
+        self::assertSame(['clientId' => 42, 'sendReceipt' => false], $ucrm->patched[0]['data']);
     }
 
     public function testAttachClientReturnsFalseWhenApiRejects(): void
@@ -92,6 +95,6 @@ final class PaymentUpdaterTest extends TestCase
 
         self::assertFalse($ok);
         self::assertNotSame([], $logLines);
-        self::assertStringContainsString('PATCH payments/7 failed', $logLines[0]);
+        self::assertStringContainsString('PATCH payments/7/attach failed', $logLines[0]);
     }
 }

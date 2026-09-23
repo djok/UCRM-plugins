@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace RevolutPaymentsImport\Status;
 
+use RevolutPaymentsImport\Revolut\TransactionShape;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
 
 /**
@@ -85,6 +86,9 @@ final class MonthlyStatusReport
             $leg = $this->incomingLeg($transaction);
             if ($leg === null) {
                 continue;
+            }
+            if (TransactionShape::isInternalTransfer($transaction)) {
+                continue; // move between own accounts — not an incoming transfer
             }
             if ($this->allowedAccountIds !== []) {
                 $accountId = strtolower((string) ($leg['account_id'] ?? ''));

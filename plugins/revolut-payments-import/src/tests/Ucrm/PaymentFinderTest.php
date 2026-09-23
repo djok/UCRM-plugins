@@ -75,6 +75,40 @@ final class PaymentFinderTest extends TestCase
         self::assertSame('2026-06-02', $ucrm->lastParams['createdDateTo']);
     }
 
+    public function testPagesBeyondTheFirst500Payments(): void
+    {
+        // Busy days can hold more than one page of payments; the target must still be found.
+        $filler = [];
+        for ($i = 0; $i < 500; $i++) {
+            $filler[] = ['id' => 1000 + $i, 'providerPaymentId' => null, 'note' => 'other', 'amount' => 1.0, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+        }
+        $target = ['id' => 7, 'providerPaymentId' => null, 'note' => 'Revolut: someone', 'amount' => 8.86, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+        $ucrm = new class($filler, [$target]) implements UcrmClient {
+            public function __construct(private readonly array $page1, private readonly array $page2)
+            {
+            }
+
+            public function get(string $endpoint, array $params = []): array
+            {
+                return ($params['offset'] ?? 0) === 0 ? $this->page1 : $this->page2;
+            }
+
+            public function post(string $endpoint, array $data): array
+            {
+                return [];
+            }
+
+            public function patch(string $endpoint, array $data): array
+            {
+                return [];
+            }
+        };
+
+        $found = (new PaymentFinder($ucrm))->findForStatementRow('tx-1', '2026-06-15', 8.86);
+
+        self::assertSame(7, $found['id'] ?? null);
+    }
+
     public function testStampedPaymentForOtherTransactionIsNotHeuristicallyMatched(): void
     {
         $stampedForOther = [

@@ -152,6 +152,15 @@ outage no longer takes down the whole integration (v1.10.0):
   spam). A transfer that is `reverted` **after** its payment was recorded logs a
   clear warning and is flagged on the status page — reverse that payment by hand.
 
+- **Internal transfers are never payments (v1.10.1).** A transaction that
+  moves money between your own Revolut accounts — it carries a negative leg on
+  the account the money left — is ignored. This covers Revolut's hold/"Release"
+  movements during an account seizure, pocket moves and exchanges. (Before
+  v1.10.1 each "Release" of held funds was recorded as a new unassigned
+  payment, although the funds had already been imported when they first
+  arrived.) Unassigned payments are attached via `PATCH payments/{id}/attach`
+  — UISP rejects `clientId` on a plain `PATCH payments/{id}`.
+
 Note: if Revolut has **blocked the money flow** on the account, the API reports
 zero incoming transactions and the account may still read `state=active`; the
 plugin then correctly imports nothing. That is an account/compliance matter to

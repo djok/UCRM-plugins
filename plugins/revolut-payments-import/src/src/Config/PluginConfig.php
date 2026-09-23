@@ -116,6 +116,18 @@ final class PluginConfig
         return $this->get('statementDone');
     }
 
+    /** Hash of the statement file whose re-match is being retried (see statementRetryCount). */
+    public function statementRetryHash(): ?string
+    {
+        return $this->get('statementRetryHash');
+    }
+
+    /** Attempts so far for the statement in statementRetryHash; 0 when none. */
+    public function statementRetryCount(): int
+    {
+        return (int) ($this->get('statementRetryCount') ?? 0);
+    }
+
     /**
      * Revolut account ids to import from; empty list = all accounts.
      * Accepts comma/semicolon/whitespace separated input, case-insensitive.

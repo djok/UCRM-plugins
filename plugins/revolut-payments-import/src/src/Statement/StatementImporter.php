@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Statement;
 
 use RevolutPaymentsImport\Matching\ClientRepository;
+use RevolutPaymentsImport\Revolut\TransactionShape;
+use RevolutPaymentsImport\Revolut\TransactionSource;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\IncomingPayment;
@@ -19,6 +21,8 @@ use RevolutPaymentsImport\Ucrm\PaymentRecorder;
  */
 final class StatementImporter
 {
+    private int $reMatchFailures = 0;
+
     public function __construct(
         private readonly ClientRepository $clients,
         private readonly PaymentRecorder $payments,
@@ -26,7 +30,14 @@ final class StatementImporter
         private readonly IdempotencyStore $idempotency,
         private readonly Logger $logger,
         private readonly ?ReMatcher $reMatcher = null,
+        private readonly ?TransactionSource $transactions = null,
     ) {
+    }
+
+    /** Re-match attempts in the last import() whose attach failed — worth retrying. */
+    public function reMatchFailures(): int
+    {
+        return $this->reMatchFailures;
     }
 
     /**
@@ -36,11 +47,21 @@ final class StatementImporter
     public function import(array $rows): int
     {
         $imported = 0;
+        $this->reMatchFailures = 0;
         foreach ($rows as $row) {
             if ($this->idempotency->isProcessed($row['id'])) {
                 // Already imported (or deliberately skipped) — give the row a
                 // second chance: attach/learn on the existing payment.
-                $this->reMatcher?->reMatch($row);
+                if ($this->reMatcher !== null && ! $this->reMatcher->reMatch($row)) {
+                    $this->reMatchFailures++;
+                }
+
+                continue;
+            }
+
+            if ($this->isVerifiedInternalTransfer($row['id'])) {
+                $this->idempotency->markProcessed($row['id']);
+                $this->logger->info(sprintf('Statement import: %s is an internal transfer between own accounts; skipped.', $row['id']));
 
                 continue;
             }
@@ -97,5 +118,28 @@ final class StatementImporter
         }
 
         return $imported;
+    }
+
+    /**
+     * The statement CSV carries no legs, so a single-account export cannot tell a
+     * hold/"Release" move from a customer transfer. The statement ID is the API
+     * transaction ID, so verify the shape via Revolut when it is reachable. If it
+     * is not (the statement is also the Revolut-down fallback), import as before —
+     * the parser's duplicate-ID guard still drops moves listed on two accounts.
+     */
+    private function isVerifiedInternalTransfer(string $id): bool
+    {
+        if ($this->transactions === null) {
+            return false;
+        }
+        try {
+            $transaction = $this->transactions->getTransaction($id);
+        } catch (\Throwable $e) {
+            $this->logger->info(sprintf('Statement import: could not verify %s with Revolut (%s); importing from the statement.', $id, $e->getMessage()));
+
+            return false;
+        }
+
+        return $transaction !== null && TransactionShape::isInternalTransfer($transaction);
     }
 }

@@ -69,6 +69,20 @@ final class MonthlyStatusReportTest extends TestCase
         self::assertSame([], (new MonthlyStatusReport())->build([$out], [], self::notProcessed()));
     }
 
+    public function testInternalReleaseBetweenOwnAccountsIsExcluded(): void
+    {
+        // A hold/release move (a negative leg on another own account) is not an
+        // incoming transfer — it must not appear, and must never offer re-import.
+        $release = $this->tx('tx-rel', 288.87, ['legs' => [
+            ['account_id' => 'acc-hold', 'amount' => -288.87, 'currency' => 'EUR', 'description' => 'Release'],
+            ['account_id' => 'acc-1', 'amount' => 288.87, 'currency' => 'EUR'],
+        ]]);
+
+        $rows = (new MonthlyStatusReport())->build([$release, $this->tx('tx-real', 12.44)], [], static fn (string $id): bool => true);
+
+        self::assertSame(['tx-real'], array_map(static fn (StatusRow $r): string => $r->transactionId, $rows));
+    }
+
     public function testRevertedTransactionWithRecordedPaymentYieldsRevertedRow(): void
     {
         $tx = $this->tx('tx-rev', 100.0, ['state' => 'reverted']);

@@ -29,21 +29,23 @@ final class StatementReMatcher implements ReMatcher
     }
 
     /** @param array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string} $row */
-    public function reMatch(array $row): void
+    public function reMatch(array $row): bool
     {
         try {
-            $this->doReMatch($row);
+            return $this->doReMatch($row);
         } catch (\Throwable $e) {
             $this->logger->error(sprintf('Re-match: %s failed: %s', $row['id'], $e->getMessage()));
+
+            return false;
         }
     }
 
     /** @param array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string} $row */
-    private function doReMatch(array $row): void
+    private function doReMatch(array $row): bool
     {
         $payment = $this->payments->findForStatementRow($row['id'], $row['date'], $row['amount']);
         if ($payment === null) {
-            return;
+            return true;
         }
 
         $client = null;
@@ -72,35 +74,39 @@ final class StatementReMatcher implements ReMatcher
                     $clientId,
                 ));
 
-                return;
+                return true;
             }
 
             if ($this->learnSenders && $identities !== []) {
                 $this->learner->learn($paymentClientId, $identities);
             }
 
-            return;
+            return true;
         }
 
         if ($clientId === null) {
             $this->logger->info(sprintf('Re-match: %s — no client recognized for "%s"; leaving unassigned.', $row['id'], $row['senderName']));
 
-            return;
+            return true;
         }
 
         $paymentId = (int) ($payment['id'] ?? 0);
-        if (! $this->updater->attachClient($paymentId, $clientId)) {
+        $attached = $this->updater->attachClient($paymentId, $clientId);
+        if ($attached) {
+            $this->logger->info(sprintf('Re-match: payment %d attached to client %d (%s).', $paymentId, $clientId, $row['senderName']));
+        } else {
             $this->logger->error(sprintf(
-                'Re-match: could not attach payment %d to client %d (UISP may not support PATCHing payments) — attach it manually.',
+                'Re-match: could not attach payment %d to client %d — will retry with the next run; attach it manually if it keeps failing.',
                 $paymentId,
                 $clientId,
             ));
-        } else {
-            $this->logger->info(sprintf('Re-match: payment %d attached to client %d (%s).', $paymentId, $clientId, $row['senderName']));
         }
 
+        // The identity resolved correctly either way, so learning does not depend on the attach.
         if ($this->learnSenders && $identities !== []) {
             $this->learner->learn($clientId, $identities);
         }
+
+        return $attached;
     }
 }

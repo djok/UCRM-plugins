@@ -38,6 +38,22 @@ final class StatementCsvParserTest extends TestCase
         self::assertSame('2026-05-29', $row['date']);
     }
 
+    public function testTransactionListedOnTwoOwnAccountsIsInternalAndSkipped(): void
+    {
+        // A multi-account export lists an internal move once per leg under the SAME
+        // ID: -X on the hold pocket ("Release") and +X on Public Invoices. That is
+        // not a customer payment — only single-row IDs can be.
+        $header = 'Date started (UTC),Date completed (UTC),ID,Type,State,Description,Reference,Payment currency,Amount,Account,Sender account,Sender name';
+        $csv = $header . "\n"
+            . '2026-09-07,2026-09-07,rel-1,TRANSFER,COMPLETED,Release,,EUR,-288.87,CUR hold,,' . "\n"
+            . '2026-09-07,2026-09-07,rel-1,TRANSFER,COMPLETED,,,EUR,288.87,EUR Public Invoices,,' . "\n"
+            . '2026-09-07,2026-09-07,real-1,TRANSFER,COMPLETED,Payment from ACME LTD,INV 7,EUR,12.44,EUR Public Invoices,BG00TEST1,ACME LTD' . "\n";
+
+        $rows = (new StatementCsvParser())->parse($csv);
+
+        self::assertSame(['real-1'], array_map(static fn (array $r): string => $r['id'], $rows));
+    }
+
     public function testReturnsEmptyForMissingHeader(): void
     {
         self::assertSame([], (new StatementCsvParser())->parse("no,real,header\n1,2,3\n"));

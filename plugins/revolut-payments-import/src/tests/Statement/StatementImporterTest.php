@@ -5,6 +5,7 @@ namespace RevolutPaymentsImport\Tests\Statement;
 
 use PHPUnit\Framework\TestCase;
 use RevolutPaymentsImport\Matching\ClientRepository;
+use RevolutPaymentsImport\Revolut\TransactionSource;
 use RevolutPaymentsImport\Statement\ReMatcher;
 use RevolutPaymentsImport\Statement\StatementImporter;
 use RevolutPaymentsImport\Support\IdempotencyStore;
@@ -138,9 +139,11 @@ final class StatementImporterTest extends TestCase
             /** @var list<array{id:string,date:string,amount:float,currency:string,reference:string,senderName:string,senderIban:string}> */
             public array $received = [];
 
-            public function reMatch(array $row): void
+            public function reMatch(array $row): bool
             {
                 $this->received[] = $row;
+
+                return true;
             }
         };
         $importer = new StatementImporter(
@@ -158,6 +161,95 @@ final class StatementImporterTest extends TestCase
         self::assertCount(0, $recorder->records);
         self::assertCount(1, $reMatcher->received);
         self::assertSame('st-1', $reMatcher->received[0]['id']);
+    }
+
+    private function importerWithSource(TransactionSource $source): array
+    {
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                return null;
+            }
+        };
+        $recorder = new CapturingRecorder();
+        $store = new IdempotencyStore($this->storePath);
+        $importer = new StatementImporter($clients, $recorder, new CountingLookup(false), $store, new Logger(static fn (string $l) => null), null, $source);
+
+        return [$importer, $recorder, $store];
+    }
+
+    public function testRowVerifiedAsInternalTransferIsNotImported(): void
+    {
+        $source = new class implements TransactionSource {
+            public function getTransaction(string $id): ?array
+            {
+                return ['id' => $id, 'legs' => [
+                    ['account_id' => 'acc-hold', 'amount' => -288.87, 'description' => 'Release'],
+                    ['account_id' => 'acc-main', 'amount' => 288.87],
+                ]];
+            }
+        };
+        [$importer, $recorder, $store] = $this->importerWithSource($source);
+
+        $imported = $importer->import([$this->row('rel-1')]);
+
+        self::assertSame(0, $imported);
+        self::assertCount(0, $recorder->records);
+        self::assertTrue($store->isProcessed('rel-1'), 'an internal move is terminal');
+    }
+
+    public function testRowVerifiedAsCustomerTransferIsImported(): void
+    {
+        $source = new class implements TransactionSource {
+            public function getTransaction(string $id): ?array
+            {
+                return ['id' => $id, 'legs' => [['account_id' => 'acc-main', 'amount' => 8.86]]];
+            }
+        };
+        [$importer, $recorder] = $this->importerWithSource($source);
+
+        self::assertSame(1, $importer->import([$this->row('real-1')]));
+        self::assertCount(1, $recorder->records);
+    }
+
+    public function testRevolutUnavailableFallsBackToImporting(): void
+    {
+        // The statement is the fallback for when Revolut is down: an unverifiable
+        // row is still imported (the CSV-level duplicate-ID guard still applies).
+        $source = new class implements TransactionSource {
+            public function getTransaction(string $id): ?array
+            {
+                throw new \RuntimeException('Revolut API unreachable');
+            }
+        };
+        [$importer, $recorder] = $this->importerWithSource($source);
+
+        self::assertSame(1, $importer->import([$this->row('real-2')]));
+        self::assertCount(1, $recorder->records);
+    }
+
+    public function testFailedReMatchIsCountedSoTheStatementIsRetried(): void
+    {
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                return null;
+            }
+        };
+        $store = new IdempotencyStore($this->storePath);
+        $store->markProcessed('st-1');
+        $store->markProcessed('st-2');
+        $reMatcher = new class implements ReMatcher {
+            public function reMatch(array $row): bool
+            {
+                return $row['id'] !== 'st-1'; // st-1's attach failed
+            }
+        };
+        $importer = new StatementImporter($clients, new CapturingRecorder(), new CountingLookup(false), $store, new Logger(static fn (string $l) => null), $reMatcher);
+
+        $importer->import([$this->row('st-1'), $this->row('st-2')]);
+
+        self::assertSame(1, $importer->reMatchFailures());
     }
 
     public function testNewRowFallsBackToSenderNameWhenIbanUnknown(): void
