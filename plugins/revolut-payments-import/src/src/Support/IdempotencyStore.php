@@ -6,6 +6,12 @@ namespace RevolutPaymentsImport\Support;
 /**
  * Records processed Revolut transaction ids to guarantee at-most-once
  * payment creation across webhook retries, duplicates, and reconciliation.
+ *
+ * Readers take a shared lock and writers an exclusive one on the same file, so a
+ * reader never sees a half-rewritten file. A non-empty file that does not decode
+ * is treated as an ERROR, never as an empty history: an empty history would make
+ * every transaction look new (mass duplicate import), and rewriting over it would
+ * wipe the record for good.
  */
 final class IdempotencyStore
 {
@@ -17,29 +23,19 @@ final class IdempotencyStore
         $this->processed = $this->load();
     }
 
-    /** @return array<string,true> */
-    private function load(): array
-    {
-        if (! is_file($this->path)) {
-            return [];
-        }
-        $decoded = json_decode((string) file_get_contents($this->path), true);
-        if (! is_array($decoded)) {
-            return [];
-        }
-        $map = [];
-        foreach ($decoded as $id) {
-            if (is_string($id)) {
-                $map[$id] = true;
-            }
-        }
-
-        return $map;
-    }
-
     public function isProcessed(string $id): bool
     {
         return isset($this->processed[$id]);
+    }
+
+    /**
+     * Re-reads the history from disk. A long-running process (the scheduled run)
+     * calls this right before recording, so it sees what a concurrent process (a
+     * webhook) recorded after this instance was created.
+     */
+    public function refresh(): void
+    {
+        $this->processed = $this->load();
     }
 
     public function markProcessed(string $id): void
@@ -54,21 +50,32 @@ final class IdempotencyStore
         });
     }
 
-    /**
-     * Removes an id so the transaction can be imported again — used by the
-     * status page's explicit re-import action when the payment was deleted
-     * in UISP. Reconciliation itself never forgets ids.
-     */
-    public function forget(string $id): void
+    /** @return array<string,true> */
+    private function load(): array
     {
-        if (! isset($this->processed[$id])) {
-            return;
+        if (! is_file($this->path)) {
+            return [];
         }
-        $this->mutate(static function (array $map) use ($id): array {
-            unset($map[$id]);
+        $handle = fopen($this->path, 'r');
+        if ($handle === false) {
+            throw new \RuntimeException('Failed to open idempotency store at ' . $this->path);
+        }
 
-            return $map;
-        });
+        try {
+            if (! flock($handle, LOCK_SH)) {
+                throw new \RuntimeException('Failed to lock idempotency store at ' . $this->path);
+            }
+
+            try {
+                $contents = stream_get_contents($handle);
+
+                return $this->decode($contents === false ? '' : $contents);
+            } finally {
+                flock($handle, LOCK_UN);
+            }
+        } finally {
+            fclose($handle);
+        }
     }
 
     /**
@@ -99,6 +106,7 @@ final class IdempotencyStore
 
             try {
                 $contents = stream_get_contents($handle);
+                // Throws on a corrupt file BEFORE anything is truncated.
                 $current = $this->decode($contents === false ? '' : $contents);
 
                 $map = $mutator($current);
@@ -129,9 +137,17 @@ final class IdempotencyStore
     /** @return array<string,true> */
     private function decode(string $contents): array
     {
+        if (trim($contents) === '') {
+            return [];
+        }
         $decoded = json_decode($contents, true);
         if (! is_array($decoded)) {
-            return [];
+            throw new \RuntimeException(sprintf(
+                'Idempotency store %s is corrupt (%d bytes that are not a JSON list) — imports are stopped to avoid duplicates. '
+                . 'Restore the file from a backup of the plugin data directory; do NOT delete it (every transaction would be imported again).',
+                $this->path,
+                strlen($contents),
+            ));
         }
         $map = [];
         foreach ($decoded as $id) {

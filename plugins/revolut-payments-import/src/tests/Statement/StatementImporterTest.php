@@ -116,6 +116,9 @@ final class StatementImporterTest extends TestCase
         self::assertSame(0, $imported);
         self::assertCount(0, $recorder->records);
         self::assertSame(1, $lookup->calls);
+        // The row's transaction id is passed so the lookup can ignore the plugin's
+        // own payments for OTHER transfers.
+        self::assertSame(['st-3'], $lookup->transactionIds);
         // Decision is final — the row must not come back on a re-run.
         self::assertTrue($store->isProcessed('st-3'));
     }
@@ -252,6 +255,17 @@ final class StatementImporterTest extends TestCase
         self::assertSame(1, $importer->reMatchFailures());
     }
 
+    public function testRowRecordedMeanwhileByAnotherProcessIsNotImportedAgain(): void
+    {
+        // The statement stage loaded its history, then a webhook recorded the same
+        // transfer. The importer re-checks the history right before recording.
+        [$importer, $recorder] = $this->makeImporter(['id' => 42]);
+        (new IdempotencyStore($this->storePath))->markProcessed('st-9');
+
+        self::assertSame(0, $importer->import([$this->row('st-9')]));
+        self::assertCount(0, $recorder->records);
+    }
+
     public function testNewRowFallsBackToSenderNameWhenIbanUnknown(): void
     {
         $row = $this->row('st-4');
@@ -293,13 +307,17 @@ final class CountingLookup implements PaymentLookup
 {
     public int $calls = 0;
 
+    /** @var list<string> */
+    public array $transactionIds = [];
+
     public function __construct(private readonly bool $exists)
     {
     }
 
-    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount): bool
+    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount, string $transactionId): bool
     {
         $this->calls++;
+        $this->transactionIds[] = $transactionId;
 
         return $this->exists;
     }

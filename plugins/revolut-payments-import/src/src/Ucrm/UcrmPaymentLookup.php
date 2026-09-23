@@ -11,7 +11,7 @@ final class UcrmPaymentLookup implements PaymentLookup
     {
     }
 
-    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount): bool
+    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount, string $transactionId): bool
     {
         $payments = $this->ucrm->get('payments', [
             'clientId' => $clientId,
@@ -21,12 +21,20 @@ final class UcrmPaymentLookup implements PaymentLookup
 
         foreach ($payments as $payment) {
             if (
-                is_array($payment)
-                && isset($payment['amount'])
-                && abs((float) $payment['amount'] - $amount) < self::AMOUNT_EPSILON
+                ! is_array($payment)
+                || ! isset($payment['amount'])
+                || abs((float) $payment['amount'] - $amount) >= self::AMOUNT_EPSILON
             ) {
-                return true;
+                continue;
             }
+            // A plugin payment for a different transfer is not a duplicate of this
+            // one — the client simply paid the same amount twice that day.
+            $key = PaymentKey::transactionIdOf($payment);
+            if ($key !== null && $key !== $transactionId) {
+                continue;
+            }
+
+            return true;
         }
 
         return false;

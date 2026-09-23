@@ -6,8 +6,10 @@ namespace RevolutPaymentsImport\Ucrm;
 interface PaymentLookup
 {
     /**
-     * Whether the client already has a payment of this amount on the given day
-     * (used to avoid duplicating manually entered payments during imports).
+     * Whether importing $transactionId would duplicate a payment the client already
+     * has: one of this amount on the given day that was entered manually or is this
+     * very transfer's own payment. The plugin's payments for OTHER transfers never
+     * count, so two genuine same-amount transfers on one day are both imported.
      */
-    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount): bool;
+    public function clientHasPaymentOn(int $clientId, string $dateYmd, float $amount, string $transactionId): bool;
 }

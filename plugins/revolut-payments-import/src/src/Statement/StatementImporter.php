@@ -6,6 +6,7 @@ namespace RevolutPaymentsImport\Statement;
 use RevolutPaymentsImport\Matching\ClientRepository;
 use RevolutPaymentsImport\Revolut\TransactionShape;
 use RevolutPaymentsImport\Revolut\TransactionSource;
+use RevolutPaymentsImport\Support\FileLock;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\IncomingPayment;
@@ -31,6 +32,7 @@ final class StatementImporter
         private readonly Logger $logger,
         private readonly ?ReMatcher $reMatcher = null,
         private readonly ?TransactionSource $transactions = null,
+        private readonly ?FileLock $importLock = null,
     ) {
     }
 
@@ -72,15 +74,16 @@ final class StatementImporter
             }
             $clientId = isset($client['id']) ? (int) $client['id'] : null;
 
-            // Manually entered payments guard: if the matched client already has a
-            // payment of the same amount on the same day (entered by hand before
-            // the integration), skip the row instead of duplicating it.
+            // Duplicate guard: if the matched client already has a payment of the
+            // same amount on the same day — entered by hand, or this very transfer's
+            // own payment — skip the row instead of duplicating it. The plugin's
+            // payments for OTHER transfers do not count (see PaymentLookup).
             if ($clientId !== null && $row['date'] !== ''
-                && $this->existingPayments->clientHasPaymentOn($clientId, $row['date'], $row['amount'])
+                && $this->existingPayments->clientHasPaymentOn($clientId, $row['date'], $row['amount'], $row['id'])
             ) {
                 $this->idempotency->markProcessed($row['id']);
                 $this->logger->info(sprintf(
-                    'Statement import: %s skipped — client %d already has a %.2f %s payment on %s (manual entry).',
+                    'Statement import: %s skipped — client %d already has a %.2f %s payment on %s (manual entry or already imported).',
                     $row['id'],
                     $clientId,
                     $row['amount'],
@@ -104,8 +107,11 @@ final class StatementImporter
                 externalId: $row['id'],
                 createdDate: $row['date'] !== '' ? $row['date'] . 'T00:00:00Z' : null,
             );
-            $this->payments->record($payment);
-            $this->idempotency->markProcessed($row['id']);
+            if (! $this->recordOnce($row['id'], $payment)) {
+                $this->logger->info(sprintf('Statement import: %s was recorded concurrently by another run; skipped.', $row['id']));
+
+                continue;
+            }
             $imported++;
 
             $this->logger->info(sprintf(
@@ -118,6 +124,27 @@ final class StatementImporter
         }
 
         return $imported;
+    }
+
+    /**
+     * Records the payment only if no other process (a webhook) recorded the same
+     * transfer after this run loaded its history: re-check under the shared
+     * import lock, then record and mark.
+     */
+    private function recordOnce(string $id, IncomingPayment $payment): bool
+    {
+        $critical = function () use ($id, $payment): bool {
+            $this->idempotency->refresh();
+            if ($this->idempotency->isProcessed($id)) {
+                return false;
+            }
+            $this->payments->record($payment);
+            $this->idempotency->markProcessed($id);
+
+            return true;
+        };
+
+        return $this->importLock !== null ? $this->importLock->synchronized($critical) : $critical();
     }
 
     /**

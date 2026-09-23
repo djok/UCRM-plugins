@@ -60,6 +60,14 @@ by default, any of the last 12 via the dropdown — with its status in UCRM/UISP
   Revolut with its original date and automatic sender matching,
 - ❌ missing from UCRM (never imported).
 Deleted payments are never re-imported automatically — only via the button.
+Re-import is duplicate-safe (v1.10.3): the button's "already imported?" check
+and the import run under one server-side lock, so a double-click, two admins or
+a replayed request can never create two payments — the second request waits,
+sees the payment the first one created and does nothing. The transaction also
+stays in the plugin's processed history the whole time (the re-import bypasses
+only that check), so the webhook, the scheduled run and the statement import
+keep skipping it and cannot record it concurrently; if a re-import fails, the
+row simply stays re-importable.
 Per-status counts and per-currency totals are shown above the table. Matching
 is exact by the payment's transaction key (see *Stable payment key* below) and
 falls back to amount + date + `Revolut: ` note matching only for payments
@@ -104,11 +112,14 @@ transaction id. The file is processed once and re-processed only when its
 content changes (upload a new export anytime).
 
 **Manually entered payments are not duplicated:** when the matched client
-already has a payment of the same amount on the same day (entered by hand
-before the integration), the row is skipped and logged. Note the trade-off:
-two genuinely separate equal-amount payments from the same client on the same
-day would also be skipped — check the log lines for `skipped — client already
-has` and add such payments manually if they ever occur.
+already has a payment of the same amount on the same day — entered by hand, or
+this very transfer's own payment — the row is skipped and logged. Payments the
+plugin created for *other* transfers do not count (v1.10.3; they are told apart
+by their transaction key), so a client who pays the same amount twice in one
+day gets both payments. The remaining trade-off is with manual entries only: a
+genuine transfer on the same day and for the same amount as a hand-entered
+payment is skipped — check the log lines for `skipped — client` and add such a
+payment manually if it ever occurs.
 
 ## Importing past payments (backfill)
 Set **Backfill history from date** in the configuration and run the plugin
@@ -178,6 +189,15 @@ outage no longer takes down the whole integration (v1.10.0):
   500. Webhook deliveries that cannot be authoritatively processed return HTTP
   503 so Revolut retries and parks them in failed-events for later replay,
   rather than being silently acknowledged and dropped.
+- **Concurrency-safe recording (v1.10.3).** The webhook, the scheduled run
+  and the statement import are separate processes that can reach the same new
+  transfer at the same moment. Recording is serialised by a shared lock
+  (`data/import.lock`): under it the processed history is re-read from disk and
+  the payment is recorded only if no other process has done so. The history
+  file (`data/processed.json`) is read under a shared lock, so a reader never
+  sees it half-rewritten; a corrupt history now stops the run with an error in
+  the log instead of silently reading as "nothing processed" (which would
+  import everything again) or being overwritten.
 - **Terminal transaction states.** `declined`/`failed`/`reverted` transfers are
   recognized as terminal (no payment, no endless "waiting for completion" log
   spam). A transfer that is `reverted` **after** its payment was recorded logs a

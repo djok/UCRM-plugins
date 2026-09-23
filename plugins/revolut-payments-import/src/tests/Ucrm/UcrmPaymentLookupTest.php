@@ -39,15 +39,18 @@ final class UcrmPaymentLookupTest extends TestCase
         };
     }
 
+    private const TX = '055d7bd0-0015-e343-0b40-032d2bd81330';
+    private const OTHER_TX = '0561ff1b-f5e5-e376-0b40-0352c56d7548';
+
     public function testFindsSameAmountPaymentOnDay(): void
     {
         $ucrm = $this->ucrm([
-            ['id' => 1, 'amount' => 8.86],
+            ['id' => 1, 'amount' => 8.86, 'note' => 'платено на каса'],
             ['id' => 2, 'amount' => 100.0],
         ]);
         $lookup = new UcrmPaymentLookup($ucrm);
 
-        self::assertTrue($lookup->clientHasPaymentOn(42, '2026-05-29', 8.86));
+        self::assertTrue($lookup->clientHasPaymentOn(42, '2026-05-29', 8.86, self::TX));
         self::assertSame('payments', $ucrm->queries[0]['endpoint']);
         self::assertSame(42, $ucrm->queries[0]['params']['clientId']);
         self::assertSame('2026-05-29', $ucrm->queries[0]['params']['createdDateFrom']);
@@ -58,13 +61,45 @@ final class UcrmPaymentLookupTest extends TestCase
     {
         $lookup = new UcrmPaymentLookup($this->ucrm([['id' => 1, 'amount' => 9.99]]));
 
-        self::assertFalse($lookup->clientHasPaymentOn(42, '2026-05-29', 8.86));
+        self::assertFalse($lookup->clientHasPaymentOn(42, '2026-05-29', 8.86, self::TX));
     }
 
     public function testToleratesFloatRepresentation(): void
     {
         $lookup = new UcrmPaymentLookup($this->ucrm([['id' => 1, 'amount' => '8.8600']]));
 
-        self::assertTrue($lookup->clientHasPaymentOn(42, '2026-05-29', 8.86));
+        self::assertTrue($lookup->clientHasPaymentOn(42, '2026-05-29', 8.86, self::TX));
+    }
+
+    public function testPluginPaymentForAnotherTransferDoesNotCount(): void
+    {
+        // The client paid the same amount twice that day; the first transfer was
+        // already imported by the plugin. The second one must NOT be dropped as a
+        // "manual duplicate".
+        $lookup = new UcrmPaymentLookup($this->ucrm([
+            ['id' => 1, 'amount' => 12.44, 'note' => 'Revolut: ACME | tx:' . self::OTHER_TX],
+        ]));
+
+        self::assertFalse($lookup->clientHasPaymentOn(42, '2026-05-29', 12.44, self::TX));
+    }
+
+    public function testPaymentForThisVeryTransferCounts(): void
+    {
+        // If the history of processed ids were lost, this stops a second import.
+        $lookup = new UcrmPaymentLookup($this->ucrm([
+            ['id' => 1, 'amount' => 12.44, 'note' => 'Revolut: ACME | tx:' . self::TX],
+        ]));
+
+        self::assertTrue($lookup->clientHasPaymentOn(42, '2026-05-29', 12.44, self::TX));
+    }
+
+    public function testManualEntryStillCountsNextToAnotherTransfersPayment(): void
+    {
+        $lookup = new UcrmPaymentLookup($this->ucrm([
+            ['id' => 1, 'amount' => 12.44, 'note' => 'Revolut: ACME | tx:' . self::OTHER_TX],
+            ['id' => 2, 'amount' => 12.44, 'note' => 'платено по банка'],
+        ]));
+
+        self::assertTrue($lookup->clientHasPaymentOn(42, '2026-05-29', 12.44, self::TX));
     }
 }

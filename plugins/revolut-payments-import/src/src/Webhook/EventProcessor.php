@@ -7,6 +7,7 @@ use RevolutPaymentsImport\Matching\ClientRepository;
 use RevolutPaymentsImport\Revolut\CounterpartySource;
 use RevolutPaymentsImport\Revolut\TransactionShape;
 use RevolutPaymentsImport\Revolut\TransactionSource;
+use RevolutPaymentsImport\Support\FileLock;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\IncomingPayment;
@@ -29,7 +30,11 @@ final class EventProcessor
     /** @var list<string> lowercase account ids; empty = import from all accounts */
     private readonly array $allowedAccountIds;
 
-    /** @param list<string> $allowedAccountIds */
+    /**
+     * @param list<string> $allowedAccountIds
+     * @param FileLock|null $importLock shared by every process that records payments
+     *        (webhook, scheduled run, statement import); null only in tests
+     */
     public function __construct(
         private readonly TransactionSource $transactions,
         private readonly CounterpartySource $counterparties,
@@ -38,6 +43,7 @@ final class EventProcessor
         private readonly IdempotencyStore $idempotency,
         private readonly Logger $logger,
         array $allowedAccountIds = [],
+        private readonly ?FileLock $importLock = null,
     ) {
         $this->allowedAccountIds = array_values(array_map(
             static fn ($id): string => strtolower(trim((string) $id)),
@@ -81,13 +87,34 @@ final class EventProcessor
     /** @param array<mixed> $transaction full Revolut transaction object */
     public function processTransaction(array $transaction): void
     {
+        $this->handle($transaction, false);
+    }
+
+    /**
+     * Explicit admin re-import (status page „Добави наново"): records the payment
+     * even though the id is already in the processed history, applying every other
+     * rule unchanged. The id is never removed from the history, so the webhook, the
+     * cron and the statement import keep skipping it and cannot record it a second
+     * time. The caller must first establish that no payment exists (Reimporter does
+     * an exact key lookup under a lock).
+     *
+     * @param array<mixed> $transaction full Revolut transaction object
+     */
+    public function reprocessTransaction(array $transaction): void
+    {
+        $this->handle($transaction, true);
+    }
+
+    /** @param array<mixed> $transaction */
+    private function handle(array $transaction, bool $force): void
+    {
         $id = $transaction['id'] ?? null;
         if (! is_string($id) || $id === '') {
             return;
         }
         $state = $transaction['state'] ?? null;
 
-        if ($this->idempotency->isProcessed($id)) {
+        if (! $force && $this->idempotency->isProcessed($id)) {
             // Already handled. Surface a post-recording reversal (once); stay silent otherwise.
             if ($state === 'reverted') {
                 $this->alertReverted($id);
@@ -162,8 +189,12 @@ final class EventProcessor
             externalId: $id,
             createdDate: is_string($completedAt) && $completedAt !== '' ? $completedAt : null,
         );
-        $this->payments->record($payment);
-        $this->idempotency->markProcessed($id);
+
+        if (! $this->recordOnce($id, $payment, $force)) {
+            $this->logger->info(sprintf('Transaction %s was recorded concurrently by another run; skipped.', $id));
+
+            return;
+        }
 
         $this->logger->info(sprintf(
             'Recorded payment for transaction %s: %.2f %s, client=%s.',
@@ -172,6 +203,31 @@ final class EventProcessor
             $payment->currencyCode,
             $clientId === null ? 'unassigned' : (string) $clientId,
         ));
+    }
+
+    /**
+     * The only check-then-act that must be atomic across processes: the webhook
+     * and the scheduled run can reach the same new transaction at the same time,
+     * and each decided "not processed" from its own snapshot. Under the shared
+     * import lock, re-read the history and record only if nobody else has.
+     * The slow network work (Revolut, client matching) stays outside the lock.
+     */
+    private function recordOnce(string $id, IncomingPayment $payment, bool $force): bool
+    {
+        $critical = function () use ($id, $payment, $force): bool {
+            if (! $force) {
+                $this->idempotency->refresh();
+                if ($this->idempotency->isProcessed($id)) {
+                    return false;
+                }
+            }
+            $this->payments->record($payment);
+            $this->idempotency->markProcessed($id);
+
+            return true;
+        };
+
+        return $this->importLock !== null ? $this->importLock->synchronized($critical) : $critical();
     }
 
     /**

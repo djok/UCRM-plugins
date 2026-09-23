@@ -8,6 +8,7 @@ use RevolutPaymentsImport\Matching\ClientMatcher;
 use RevolutPaymentsImport\Matching\ClientRepository;
 use RevolutPaymentsImport\Revolut\CounterpartySource;
 use RevolutPaymentsImport\Revolut\TransactionSource;
+use RevolutPaymentsImport\Support\FileLock;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Ucrm\IncomingPayment;
@@ -369,6 +370,117 @@ final class EventProcessorTest extends TestCase
 
         self::assertCount(1, $recorder->records);
         self::assertSame(1, $recorder->records[0]->clientId);
+    }
+
+    public function testTransactionRecordedMeanwhileByAnotherProcessIsNotRecordedAgain(): void
+    {
+        // The cron loaded its history snapshot, then a webhook recorded the same new
+        // transfer. The cron must re-check the history right before recording.
+        $recorder = new RecordingRecorder();
+        $cron = $this->makeProcessor(
+            [],
+            ['cp-1' => ['id' => 'cp-1', 'name' => 'John', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]],
+            ['id' => 7],
+            $recorder,
+        );
+        (new IdempotencyStore($this->storePath))->markProcessed('tx-1'); // the webhook got there first
+
+        $cron->processTransaction($this->completedIncoming());
+
+        self::assertCount(0, $recorder->records);
+    }
+
+    public function testRecordingHappensUnderTheImportLock(): void
+    {
+        $lockPath = sys_get_temp_dir() . '/revolut-import-' . uniqid() . '.lock';
+        $recorder = new class($lockPath) implements PaymentRecorder {
+            public ?bool $lockWasFree = null;
+
+            public function __construct(private readonly string $lockPath)
+            {
+            }
+
+            public function record(IncomingPayment $payment): void
+            {
+                $handle = fopen($this->lockPath, 'c');
+                $this->lockWasFree = flock($handle, LOCK_EX | LOCK_NB);
+                if ($this->lockWasFree) {
+                    flock($handle, LOCK_UN);
+                }
+                fclose($handle);
+            }
+        };
+        $cpSource = new class implements CounterpartySource {
+            public function getCounterparty(string $id): ?array
+            {
+                return null;
+            }
+        };
+        $txSource = new class implements TransactionSource {
+            public function getTransaction(string $id): ?array
+            {
+                return null;
+            }
+        };
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                return null;
+            }
+        };
+        $processor = new EventProcessor(
+            $txSource,
+            $cpSource,
+            $clients,
+            $recorder,
+            new IdempotencyStore($this->storePath),
+            new Logger(static fn (string $l) => null),
+            [],
+            new FileLock($lockPath),
+        );
+
+        $processor->processTransaction($this->completedIncoming());
+
+        self::assertFalse($recorder->lockWasFree, 'the import lock must be held while recording');
+        @unlink($lockPath);
+    }
+
+    public function testReprocessRecordsAnAlreadyProcessedTransactionOnce(): void
+    {
+        // The status page's re-import: the id stays in the history (other paths keep
+        // skipping it), but the explicit reprocess records the payment again.
+        $recorder = new RecordingRecorder();
+        (new IdempotencyStore($this->storePath))->markProcessed('tx-1'); // before the processor loads the store
+        $processor = $this->makeProcessor(
+            [],
+            ['cp-1' => ['id' => 'cp-1', 'name' => 'John', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]],
+            ['id' => 7],
+            $recorder,
+        );
+
+        $processor->processTransaction($this->completedIncoming());
+        self::assertCount(0, $recorder->records, 'the normal path still skips a processed id');
+
+        $processor->reprocessTransaction($this->completedIncoming());
+        self::assertCount(1, $recorder->records);
+        self::assertSame(7, $recorder->records[0]->clientId);
+        self::assertTrue((new IdempotencyStore($this->storePath))->isProcessed('tx-1'));
+    }
+
+    public function testReprocessStillAppliesEveryOtherRule(): void
+    {
+        $recorder = new RecordingRecorder();
+        $processor = $this->makeProcessor([], [], null, $recorder);
+
+        $declined = $this->completedIncoming();
+        $declined['state'] = 'declined';
+        $internal = $this->completedIncoming();
+        $internal['legs'][] = ['account_id' => 'acc-hold', 'amount' => -12.44, 'currency' => 'EUR', 'description' => 'Release'];
+
+        $processor->reprocessTransaction($declined);
+        $processor->reprocessTransaction($internal);
+
+        self::assertCount(0, $recorder->records);
     }
 
     public function testInternalReleaseBetweenOwnAccountsIsNotAPayment(): void

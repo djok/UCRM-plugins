@@ -17,6 +17,7 @@ use RevolutPaymentsImport\Revolut\WebhooksApi;
 use RevolutPaymentsImport\Statement\StatementCsvParser;
 use RevolutPaymentsImport\Statement\StatementImporter;
 use RevolutPaymentsImport\Statement\StatementReMatcher;
+use RevolutPaymentsImport\Support\FileLock;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Support\StageRunner;
@@ -74,6 +75,7 @@ if ($config->refreshToken() !== null && $config->webhookId() !== null) {
             new IdempotencyStore(__DIR__ . '/data/processed.json'),
             $logger,
             $config->accountIds(),
+            new FileLock(__DIR__ . '/data/import.lock'),
         );
     });
 
@@ -179,6 +181,7 @@ $runner->run('statement-import', function () use ($config, $ucrm, $logger, $tran
         $logger,
         $reMatcher,
         $transactionsApi,
+        new FileLock(__DIR__ . '/data/import.lock'),
     );
     $imported = $importer->import($rows);
     $logger->info(sprintf('main: statement import — %d row(s) parsed, %d payment(s) imported.', count($rows), $imported));

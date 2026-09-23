@@ -21,7 +21,9 @@ use RevolutPaymentsImport\Revolut\TransactionsApi;
 use RevolutPaymentsImport\Revolut\WebhooksApi;
 use RevolutPaymentsImport\Status\MonthlyStatusReport;
 use RevolutPaymentsImport\Status\MonthWindow;
+use RevolutPaymentsImport\Status\Reimporter;
 use RevolutPaymentsImport\Status\StatusRow;
+use RevolutPaymentsImport\Support\FileLock;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Support\SyncHealth;
@@ -155,6 +157,7 @@ function buildProcessor(PluginConfig $config, Logger $logger): EventProcessor
         new IdempotencyStore(__DIR__ . '/data/processed.json'),
         $logger,
         $config->accountIds(),
+        new FileLock(__DIR__ . '/data/import.lock'),
     );
 }
 
@@ -483,9 +486,10 @@ function configuredAccountWarning(RevolutClient $revolut, PluginConfig $config):
 }
 
 /**
- * Explicit re-import of one transaction (status page „Добави наново"): forgets
- * the idempotency record and runs the standard pipeline — original date,
- * transaction key in the note, IBAN→name client matching. Admin session + HMAC required.
+ * Explicit re-import of one transaction (status page „Добави наново"): runs the
+ * standard pipeline — original date, transaction key in the note, IBAN→name
+ * client matching — without removing the id from the processed history
+ * (see Reimporter). Admin session + HMAC required.
  */
 function handleReimportAction(PluginConfig $config, Logger $logger): void
 {
@@ -523,33 +527,32 @@ function handleReimportAction(PluginConfig $config, Logger $logger): void
             time(),
         );
         $revolut = new RevolutClient(HttpClientFactory::create(), $config->environment(), $tokenProvider->getAccessToken());
-        $transaction = (new TransactionsApi($revolut))->getTransaction($txId);
-        if ($transaction === null) {
+        $ucrm = SdkUcrmClient::create();
+
+        // The check and the import run under one server-side lock (Reimporter), so
+        // concurrent submits cannot both pass the "already imported?" check. The id
+        // stays in the processed history (reprocessTransaction bypasses only that
+        // check), so the webhook, the cron and the statement import keep skipping it.
+        $result = (new Reimporter(
+            new TransactionsApi($revolut),
+            static fn (array $transaction, string $id): bool => alreadyImported($transaction, $id, $ucrm),
+            static fn (array $transaction) => buildProcessor($config, $logger)->reprocessTransaction($transaction),
+            __DIR__ . '/data/reimport.lock',
+        ))->reimport($txId);
+
+        if ($result === Reimporter::NOT_FOUND) {
             http_response_code(404);
             renderHtml('Не е намерена', 'Revolut не върна такава транзакция. Проверете лога на плъгина.');
 
             return;
         }
 
-        if (alreadyImported($transaction, $txId, SdkUcrmClient::create())) {
-            $logger->info('Re-import: transaction ' . $txId . ' already has a UISP payment — skipping (double-submit or stale token).');
-            header(
-                'Location: ?status=1&already=1' . ($month !== '' ? '&month=' . rawurlencode($month) : ''),
-                true,
-                303,
-            );
-
-            return;
-        }
-
-        // Forget FIRST (flushes to disk), then build the processor — its own
-        // IdempotencyStore instance loads the file fresh and will record anew.
-        (new IdempotencyStore(__DIR__ . '/data/processed.json'))->forget($txId);
-        buildProcessor($config, $logger)->processTransaction($transaction);
-        $logger->info('Re-import: transaction ' . $txId . ' re-processed on admin request.');
-
+        $flag = $result === Reimporter::ALREADY ? 'already' : 'reimported';
+        $logger->info($result === Reimporter::ALREADY
+            ? 'Re-import: transaction ' . $txId . ' already has a UISP payment — skipping (double-submit or stale token).'
+            : 'Re-import: transaction ' . $txId . ' re-processed on admin request.');
         header(
-            'Location: ?status=1&reimported=1' . ($month !== '' ? '&month=' . rawurlencode($month) : ''),
+            'Location: ?status=1&' . $flag . '=1' . ($month !== '' ? '&month=' . rawurlencode($month) : ''),
             true,
             303,
         );
