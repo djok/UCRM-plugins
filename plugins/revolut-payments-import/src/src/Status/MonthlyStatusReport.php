@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Status;
 
 use RevolutPaymentsImport\Revolut\TransactionShape;
+use RevolutPaymentsImport\Ucrm\PaymentKey;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
+use RevolutPaymentsImport\Ucrm\UispDate;
 
 /**
  * Pure reconciliation logic for the status page: filters raw Revolut
@@ -41,19 +43,25 @@ final class MonthlyStatusReport
      */
     public function build(array $transactions, array $payments, callable $isProcessed, ?callable $resolveClient = null): array
     {
-        $byProviderId = [];
+        $byTransactionKey = [];
         $legacyPool = [];
         foreach ($payments as $index => $payment) {
             if (! is_array($payment)) {
                 continue;
             }
-            $providerId = (string) ($payment['providerPaymentId'] ?? '');
-            if (($payment['providerName'] ?? null) === UcrmPaymentGateway::PROVIDER_NAME && $providerId !== '') {
-                $byProviderId[$providerId] = $payment;
+            // Exact key first (note token; provider fields if a UISP version keeps them).
+            $key = PaymentKey::transactionIdOf($payment);
+            if ($key !== null) {
+                $byTransactionKey[$key] = $payment;
 
                 continue;
             }
-            if (str_starts_with((string) ($payment['note'] ?? ''), self::LEGACY_NOTE_PREFIX)) {
+            // Only genuinely legacy payments (no key of any kind) may be matched by
+            // amount + date — a keyed payment belongs to exactly one transaction.
+            if (
+                (string) ($payment['providerPaymentId'] ?? '') === ''
+                && str_starts_with((string) ($payment['note'] ?? ''), self::LEGACY_NOTE_PREFIX)
+            ) {
                 $legacyPool[$index] = $payment;
             }
         }
@@ -101,12 +109,13 @@ final class MonthlyStatusReport
             $date = substr(is_string($completedAt) ? $completedAt : '', 0, 10);
             $amount = (float) $leg['amount'];
 
-            $payment = $byProviderId[$id] ?? null;
+            $payment = $byTransactionKey[$id] ?? null;
             if ($payment === null) {
                 foreach ($legacyPool as $index => $candidate) {
                     if (
                         abs((float) ($candidate['amount'] ?? 0.0) - $amount) < self::AMOUNT_EPSILON
-                        && substr((string) ($candidate['createdDate'] ?? ''), 0, 10) === $date
+                        // UTC on both sides: UISP returns createdDate in local time.
+                        && UispDate::utcDate($candidate['createdDate'] ?? null) === $date
                     ) {
                         $payment = $candidate;
                         unset($legacyPool[$index]); // a payment backs at most one transfer

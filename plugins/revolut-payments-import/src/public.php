@@ -26,6 +26,7 @@ use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
 use RevolutPaymentsImport\Support\SyncHealth;
 use RevolutPaymentsImport\Support\SyncHealthStore;
+use RevolutPaymentsImport\Ucrm\PaymentFinder;
 use RevolutPaymentsImport\Ucrm\SdkUcrmClient;
 use RevolutPaymentsImport\Ucrm\UcrmClient;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
@@ -484,7 +485,7 @@ function configuredAccountWarning(RevolutClient $revolut, PluginConfig $config):
 /**
  * Explicit re-import of one transaction (status page „Добави наново"): forgets
  * the idempotency record and runs the standard pipeline — original date,
- * provider stamping, IBAN→name client matching. Admin session + HMAC required.
+ * transaction key in the note, IBAN→name client matching. Admin session + HMAC required.
  */
 function handleReimportAction(PluginConfig $config, Logger $logger): void
 {
@@ -577,33 +578,21 @@ function statusActionToken(string $txId, PluginConfig $config): ?string
  * page navigates away) and a stale-token replay (an old status page tab, or
  * a bookmarked/replayed POST, still carrying a previously-valid HMAC token
  * for a transaction that has meanwhile already been re-imported by someone
- * else). Matching is EXACT by provider id only — no amount/note heuristic —
- * so this can never produce a false positive that blocks a legitimate
- * re-import.
+ * else). Matching is EXACT by the transaction key (PaymentKey: the note token
+ * every plugin-created payment carries; UISP does not persist the provider
+ * fields) — no amount/note heuristic — so this can never produce a false
+ * positive that blocks a legitimate re-import.
  *
  * @param array<mixed> $transaction
  */
 function alreadyImported(array $transaction, string $txId, UcrmClient $ucrm): bool
 {
     $date = substr((string) ($transaction['completed_at'] ?? $transaction['created_at'] ?? ''), 0, 10);
-
-    $params = ['limit' => 500];
-    if ($date !== '') {
-        $params['createdDateFrom'] = (new \DateTimeImmutable($date . 'T00:00:00Z'))->modify('-1 day')->format('Y-m-d');
-        $params['createdDateTo'] = (new \DateTimeImmutable($date . 'T00:00:00Z'))->modify('+1 day')->format('Y-m-d');
+    if ($date === '') {
+        return false;
     }
 
-    foreach ($ucrm->get('payments', $params) as $payment) {
-        if (
-            is_array($payment)
-            && ($payment['providerName'] ?? null) === UcrmPaymentGateway::PROVIDER_NAME
-            && (string) ($payment['providerPaymentId'] ?? '') === $txId
-        ) {
-            return true;
-        }
-    }
-
-    return false;
+    return (new PaymentFinder($ucrm))->findByTransactionId($txId, $date) !== null;
 }
 
 /**
@@ -611,7 +600,8 @@ function alreadyImported(array $transaction, string $txId, UcrmClient $ucrm): bo
  * each side: the month window is UTC while UCRM filters createdDate in the
  * server's local timezone, so a transfer completed near UTC midnight carries a
  * payment dated in the neighboring day. Padding cannot create false matches —
- * exact matching is by provider id and the heuristic requires date equality.
+ * exact matching is by the transaction key (PaymentKey) and the heuristic
+ * requires equality of the UTC date.
  *
  * @return list<array<mixed>>
  */

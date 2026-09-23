@@ -61,9 +61,9 @@ by default, any of the last 12 via the dropdown — with its status in UCRM/UISP
 - ❌ missing from UCRM (never imported).
 Deleted payments are never re-imported automatically — only via the button.
 Per-status counts and per-currency totals are shown above the table. Matching
-uses the payment's `providerName`/`providerPaymentId` (stamped on every payment
-the plugin creates since v1.6.0) and falls back to amount + date + `Revolut: `
-note matching for payments imported by older versions. The page UI is in
+is exact by the payment's transaction key (see *Stable payment key* below) and
+falls back to amount + date + `Revolut: ` note matching only for payments
+imported before v1.10.2 that carry no key. The page UI is in
 Bulgarian. The transfer list honors the "Revolut accounts to import from"
 filter — it shows exactly what the plugin imports.
 
@@ -126,6 +126,37 @@ acquirer top-ups) appear as unassigned payments to clean up manually.
   timestamp tolerance.
 - The private key lives in `data/keys/private.pem` (web-denied, never shipped in
   the archive, gitignored).
+
+## Stable payment key (v1.10.2)
+Every payment the plugin creates ends its note with the Revolut transaction id
+as a final segment, e.g. `Revolut: ACME LTD | INV 7 | BG00… | tx:055d7bd0-…`
+(or `Revolut: tx:…` when nothing else is known). This key links the UISP
+payment to its transaction exactly: the status page, the statement re-matcher
+and the re-import button's duplicate guard all match on it.
+
+Why the note: UISP 4.5.33 accepts `providerName`/`providerPaymentId` on
+`POST payments` but does **not** persist them — they read back `null` — so
+matching on them never worked, and the re-import guard could not detect a
+double-submit. The note is a persisted text column (no length limit). A UISP
+*payment custom attribute* was the alternative: the API supports it (and can
+even filter payments by it), but it needs a new global attribute definition
+created at runtime that an administrator could delete or rename, and it could
+not be verified on the live system without writing to it. The provider fields
+are still sent and still honoured should a UISP version persist them.
+
+Only a Revolut transaction id (UUID-shaped, as in both the API and the
+statement CSV) forms a key, and only as the whole final segment after `|` or
+the `Revolut:` prefix — a legacy bank reference such as `Ref: tx:12345` is never
+mistaken for one.
+
+Payments imported before v1.10.2 have no key; they keep matching through the
+amount + date + `Revolut: ` note heuristic (ambiguous when a client pays the
+same amount twice on one day). Since v1.10.2 that heuristic compares the **UTC**
+date of the payment — UISP returns `createdDate` in the server's local time, so
+a transfer completed near midnight UTC used to look "missing" and could be
+re-imported as a duplicate. The re-import guard never uses the heuristic, so it
+cannot block a legitimate re-import. Do not remove the `tx:` segment when
+editing a note — the payment then falls back to the heuristic.
 
 ## Resilience when Revolut is unavailable
 A blocked/restricted Revolut account, an expired authorization, or a Revolut

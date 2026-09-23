@@ -69,6 +69,59 @@ final class MonthlyStatusReportTest extends TestCase
         self::assertSame([], (new MonthlyStatusReport())->build([$out], [], self::notProcessed()));
     }
 
+    public function testNoteKeyMatchesExactlyEvenWithSameAmountSameDay(): void
+    {
+        // Two transfers of the same amount on the same day, each with its own
+        // keyed payment (provider fields null, as UISP returns them). Each must be
+        // linked to ITS payment — the heuristic alone could not tell them apart.
+        $txA = '055d7bd0-0015-e343-0b40-032d2bd81330';
+        $txB = '0561ff1b-f5e5-e376-0b40-0352c56d7548';
+        $transactions = [$this->tx($txA, 12.44), $this->tx($txB, 12.44)];
+        $payments = [
+            ['id' => 2, 'clientId' => 20, 'providerName' => null, 'providerPaymentId' => null, 'note' => 'Revolut: B | tx:' . $txB, 'amount' => 12.44, 'createdDate' => '2026-06-15T10:00:00+0300'],
+            ['id' => 1, 'clientId' => null, 'providerName' => null, 'providerPaymentId' => null, 'note' => 'Revolut: A | tx:' . $txA, 'amount' => 12.44, 'createdDate' => '2026-06-15T10:00:00+0300'],
+        ];
+
+        $rows = (new MonthlyStatusReport())->build($transactions, $payments, self::notProcessed());
+
+        $byTx = [];
+        foreach ($rows as $row) {
+            $byTx[$row->transactionId] = [$row->status, $row->clientId];
+        }
+        self::assertSame([StatusRow::STATUS_UNASSIGNED, null], $byTx[$txA]);
+        self::assertSame([StatusRow::STATUS_ASSIGNED, 20], $byTx[$txB]);
+    }
+
+    public function testKeyedPaymentOfAnotherTransactionIsNotUsedByTheHeuristic(): void
+    {
+        // tx-c has no payment; the keyed payment belongs to another transaction and
+        // must not be borrowed by amount + date.
+        $payments = [
+            ['id' => 3, 'clientId' => 30, 'providerName' => null, 'note' => 'Revolut: X | tx:0561ff1b-f5e5-e376-0b40-0352c56d7548', 'amount' => 50.0, 'createdDate' => '2026-06-15T10:00:00+0300'],
+        ];
+
+        $rows = (new MonthlyStatusReport())->build([$this->tx('tx-c', 50.0)], $payments, self::notProcessed());
+
+        self::assertSame(StatusRow::STATUS_MISSING, $rows[0]->status);
+    }
+
+    public function testLegacyHeuristicComparesTheUtcDate(): void
+    {
+        // A transfer completed at 22:30Z on the 14th; its legacy (pre-key) payment
+        // was written as that instant and UISP returns it as 01:30+03:00 on the
+        // 15th. Comparing local dates would call it missing — and the re-import
+        // button on such a GONE row would duplicate the payment.
+        $transfer = $this->tx('tx-late', 8.86, ['completed_at' => '2026-06-14T22:30:00Z']);
+        $payments = [
+            ['id' => 4, 'clientId' => 40, 'providerName' => null, 'providerPaymentId' => null, 'note' => 'Revolut: ACME', 'amount' => 8.86, 'createdDate' => '2026-06-15T01:30:00+0300'],
+        ];
+
+        $rows = (new MonthlyStatusReport())->build([$transfer], $payments, static fn (string $id): bool => true);
+
+        self::assertSame(StatusRow::STATUS_ASSIGNED, $rows[0]->status);
+        self::assertSame(40, $rows[0]->clientId);
+    }
+
     public function testInternalReleaseBetweenOwnAccountsIsExcluded(): void
     {
         // A hold/release move (a negative leg on another own account) is not an

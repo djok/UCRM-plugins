@@ -59,6 +59,19 @@ final class UcrmPaymentGatewayTest extends TestCase
         self::assertStringContainsString('John', $data['note']);
     }
 
+    public function testNoteCarriesTheTransactionKey(): void
+    {
+        // UISP drops providerPaymentId, so the stable key travels in the note.
+        $ucrm = $this->ucrm();
+        $gateway = new UcrmPaymentGateway($ucrm, 'Bank transfer');
+
+        $gateway->record(new IncomingPayment(12.44, 'EUR', 42, 'Revolut: John | INV 7', '055d7bd0-0015-e343-0b40-032d2bd81330'));
+        $gateway->record(new IncomingPayment(1.0, 'EUR', null, 'Revolut: ', '0561ff1b-f5e5-e376-0b40-0352c56d7548'));
+
+        self::assertSame('Revolut: John | INV 7 | tx:055d7bd0-0015-e343-0b40-032d2bd81330', $ucrm->posted[0]['data']['note']);
+        self::assertSame('Revolut: tx:0561ff1b-f5e5-e376-0b40-0352c56d7548', $ucrm->posted[1]['data']['note']);
+    }
+
     public function testUnassignedPaymentOmitsClientId(): void
     {
         $ucrm = $this->ucrm();

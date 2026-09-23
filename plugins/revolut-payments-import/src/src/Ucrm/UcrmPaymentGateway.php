@@ -10,7 +10,11 @@ namespace RevolutPaymentsImport\Ucrm;
  */
 final class UcrmPaymentGateway implements PaymentRecorder
 {
-    /** Stamped on every created payment; the status page matches on it. */
+    /**
+     * Stamped on every created payment. UISP 4.5.33 does not persist the provider
+     * fields, so the matching key is the note token (see PaymentKey); they are
+     * still sent in case a UISP version keeps them.
+     */
     public const PROVIDER_NAME = 'Revolut';
 
     private ?string $methodId = null;
@@ -27,7 +31,7 @@ final class UcrmPaymentGateway implements PaymentRecorder
             'amount' => $payment->amount,
             'currencyCode' => $payment->currencyCode,
             'methodId' => $this->resolveMethodId(),
-            'note' => $payment->note,
+            'note' => PaymentKey::appendTo($payment->note, $payment->externalId),
             'providerName' => self::PROVIDER_NAME,
             'providerPaymentId' => $payment->externalId,
         ];

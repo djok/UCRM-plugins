@@ -75,6 +75,50 @@ final class PaymentFinderTest extends TestCase
         self::assertSame('2026-06-02', $ucrm->lastParams['createdDateTo']);
     }
 
+    private const TX = '055d7bd0-0015-e343-0b40-032d2bd81330';
+    private const TX_OTHER = '0561ff1b-f5e5-e376-0b40-0352c56d7548';
+
+    public function testFindsByNoteKeyWhenUispDropsProviderFields(): void
+    {
+        // What UISP 4.5.33 actually returns: provider fields null, key in the note.
+        $keyed = ['id' => 5, 'providerName' => null, 'providerPaymentId' => null, 'note' => 'Revolut: ACME | tx:' . self::TX, 'amount' => 8.86, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+        // A same-day same-amount legacy payment must NOT win over the exact key.
+        $legacy = ['id' => 6, 'providerName' => null, 'providerPaymentId' => null, 'note' => 'Revolut: OTHER', 'amount' => 8.86, 'createdDate' => '2026-06-15T09:00:00+03:00'];
+
+        $found = (new PaymentFinder($this->ucrm([$legacy, $keyed])))->findForStatementRow(self::TX, '2026-06-15', 8.86);
+
+        self::assertSame(5, $found['id']);
+    }
+
+    public function testKeyedPaymentOfAnotherTransactionIsNotALegacyCandidate(): void
+    {
+        $keyedForOther = ['id' => 7, 'providerName' => null, 'providerPaymentId' => null, 'note' => 'Revolut: ACME | tx:' . self::TX_OTHER, 'amount' => 8.86, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+
+        self::assertNull((new PaymentFinder($this->ucrm([$keyedForOther])))->findForStatementRow(self::TX, '2026-06-15', 8.86));
+    }
+
+    public function testFindByTransactionIdIsExactOnly(): void
+    {
+        $keyed = ['id' => 5, 'note' => 'Revolut: ACME | tx:' . self::TX, 'amount' => 8.86, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+        $legacy = ['id' => 6, 'note' => 'Revolut: ACME', 'amount' => 8.86, 'createdDate' => '2026-06-15T10:00:00+03:00'];
+
+        self::assertSame(5, (new PaymentFinder($this->ucrm([$legacy, $keyed])))->findByTransactionId(self::TX, '2026-06-15')['id'] ?? null);
+        // The re-import guard must never block on a heuristic match.
+        self::assertNull((new PaymentFinder($this->ucrm([$legacy])))->findByTransactionId(self::TX, '2026-06-15'));
+    }
+
+    public function testLegacyHeuristicComparesTheUtcDate(): void
+    {
+        // A legacy webhook payment was written as the transfer's UTC instant
+        // (22:30Z on the 14th) and UISP returns it in local time (01:30+03:00 on
+        // the 15th). The statement row carries the UTC date — it must still match.
+        $legacy = ['id' => 9, 'providerPaymentId' => null, 'note' => 'Revolut: ACME', 'amount' => 8.86, 'createdDate' => '2026-06-15T01:30:00+0300'];
+
+        $found = (new PaymentFinder($this->ucrm([$legacy])))->findForStatementRow(self::TX, '2026-06-14', 8.86);
+
+        self::assertSame(9, $found['id'] ?? null);
+    }
+
     public function testPagesBeyondTheFirst500Payments(): void
     {
         // Busy days can hold more than one page of payments; the target must still be found.
