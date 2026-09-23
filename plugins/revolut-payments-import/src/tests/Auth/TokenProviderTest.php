@@ -9,8 +9,10 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 use RevolutPaymentsImport\Auth\JwtClientAssertion;
+use RevolutPaymentsImport\Auth\ReauthorizationRequiredException;
 use RevolutPaymentsImport\Auth\TokenProvider;
 use RevolutPaymentsImport\Config\PluginConfig;
+use RevolutPaymentsImport\Revolut\RevolutApiException;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 
 final class TokenProviderTest extends TestCase
@@ -99,5 +101,46 @@ final class TokenProviderTest extends TestCase
         $reloaded = PluginConfig::fromFile($this->path);
         self::assertSame('oa_sand_refresh_after_code', $reloaded->refreshToken());
         self::assertSame('oa_sand_access_after_code', $reloaded->accessToken());
+    }
+
+    public function testRejectedRefreshTokenSignalsReauthorizationAndKeepsToken(): void
+    {
+        $config = PluginConfig::fromFile($this->path);
+        $mock = new MockHandler([
+            new Response(400, [], (string) json_encode([
+                'error' => 'invalid_grant',
+                'error_description' => 'Refresh token is invalid or has expired.',
+            ])),
+        ]);
+
+        try {
+            $this->provider($mock, $config)->getAccessToken();
+            self::fail('expected ReauthorizationRequiredException');
+        } catch (ReauthorizationRequiredException $e) {
+            self::assertSame(400, $e->statusCode);
+            self::assertStringContainsString('Re-authorize', $e->getMessage());
+        }
+
+        // The stored refresh token must NOT be cleared — a transient rejection
+        // must not force re-consent; the operator clears it deliberately.
+        $reloaded = PluginConfig::fromFile($this->path);
+        self::assertSame('oa_sand_refresh_existing', $reloaded->refreshToken());
+        self::assertNull($reloaded->accessToken());
+    }
+
+    public function testServerErrorOnRefreshIsTransientNotReauthorization(): void
+    {
+        $config = PluginConfig::fromFile($this->path);
+        $mock = new MockHandler([
+            new Response(503, [], '{"message":"try again later"}'),
+        ]);
+
+        try {
+            $this->provider($mock, $config)->getAccessToken();
+            self::fail('expected RevolutApiException');
+        } catch (RevolutApiException $e) {
+            self::assertTrue($e->isTransient());
+            self::assertSame(503, $e->statusCode);
+        }
     }
 }

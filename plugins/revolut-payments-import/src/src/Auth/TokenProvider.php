@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Auth;
 
 use RevolutPaymentsImport\Config\PluginConfig;
+use RevolutPaymentsImport\Revolut\RevolutApiException;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 
 /**
@@ -38,15 +39,34 @@ final class TokenProvider
 
         $refreshToken = $this->config->refreshToken();
         if ($refreshToken === null) {
-            throw new \RuntimeException('No refresh token available — re-authorization required.');
+            throw new ReauthorizationRequiredException(
+                'No refresh token stored — authorize the plugin: open the consent URL printed in the log.',
+            );
         }
 
-        $response = $this->client->postForm(self::TOKEN_PATH, [
-            'grant_type' => 'refresh_token',
-            'refresh_token' => $refreshToken,
-            'client_assertion_type' => self::ASSERTION_TYPE,
-            'client_assertion' => $this->buildAssertion(),
-        ]);
+        try {
+            $response = $this->client->postForm(self::TOKEN_PATH, [
+                'grant_type' => 'refresh_token',
+                'refresh_token' => $refreshToken,
+                'client_assertion_type' => self::ASSERTION_TYPE,
+                'client_assertion' => $this->buildAssertion(),
+            ]);
+        } catch (RevolutApiException $e) {
+            // A 400/401 on the refresh grant means Revolut rejected the stored
+            // refresh token — it will never recover on its own. Do NOT clear it
+            // (a transient 401 must not force re-consent); tell the operator how.
+            if ($e->statusCode === 400 || $e->statusCode === 401) {
+                throw new ReauthorizationRequiredException(
+                    'Revolut rejected the stored refresh token (HTTP ' . $e->statusCode . '). Re-authorize: '
+                    . 'clear the "Refresh token (managed)" field in the plugin settings, Save, then open the '
+                    . 'consent URL printed in the log.',
+                    $e->statusCode,
+                    $e,
+                );
+            }
+
+            throw $e;
+        }
 
         return $this->persistTokens($response)['access_token'];
     }

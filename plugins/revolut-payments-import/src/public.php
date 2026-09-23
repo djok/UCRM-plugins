@@ -8,11 +8,14 @@ use Ubnt\UcrmPluginSdk\Service\PluginLogManager;
 use Ubnt\UcrmPluginSdk\Service\UcrmOptionsManager;
 use Ubnt\UcrmPluginSdk\Service\UcrmSecurity;
 use RevolutPaymentsImport\Auth\JwtClientAssertion;
+use RevolutPaymentsImport\Auth\ReauthorizationRequiredException;
 use RevolutPaymentsImport\Auth\TokenProvider;
 use RevolutPaymentsImport\Config\PluginConfig;
 use RevolutPaymentsImport\Matching\ClientMatcher;
 use RevolutPaymentsImport\Revolut\AccountsApi;
 use RevolutPaymentsImport\Revolut\CounterpartyApi;
+use RevolutPaymentsImport\Revolut\HttpClientFactory;
+use RevolutPaymentsImport\Revolut\RevolutApiException;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 use RevolutPaymentsImport\Revolut\TransactionsApi;
 use RevolutPaymentsImport\Revolut\WebhooksApi;
@@ -21,6 +24,8 @@ use RevolutPaymentsImport\Status\MonthWindow;
 use RevolutPaymentsImport\Status\StatusRow;
 use RevolutPaymentsImport\Support\IdempotencyStore;
 use RevolutPaymentsImport\Support\Logger;
+use RevolutPaymentsImport\Support\SyncHealth;
+use RevolutPaymentsImport\Support\SyncHealthStore;
 use RevolutPaymentsImport\Ucrm\SdkUcrmClient;
 use RevolutPaymentsImport\Ucrm\UcrmClient;
 use RevolutPaymentsImport\Ucrm\UcrmPaymentGateway;
@@ -114,8 +119,18 @@ try {
     $processor->processEvent($event);
     http_response_code(200);
     echo json_encode(['status' => 'ok']);
+} catch (RevolutApiException | ReauthorizationRequiredException $e) {
+    // Revolut itself is unavailable (blocked account, 401/403/429/5xx) or the token
+    // was rejected — we could NOT authoritatively process this event. Answer 503 so
+    // Revolut retries and, after retries, parks it in failed-events (21-day window),
+    // where the cron replay recovers it. Returning 200 here would silently drop it.
+    $status = $e instanceof RevolutApiException ? ($e->statusCode ?? 'unreachable') : 'reauth';
+    $logger->error('Error processing webhook (Revolut ' . $status . '): ' . $e->getMessage() . ' — Revolut will retry.');
+    http_response_code(503);
+    echo json_encode(['status' => 'retry']);
 } catch (\Throwable $e) {
-    // Acknowledge so Revolut does not hammer retries; reconciliation will recover.
+    // A UISP-side or unexpected error — acknowledge so Revolut does not hammer
+    // retries; the cron reconciliation will recover this transaction.
     $logger->error('Error processing webhook: ' . $e->getMessage());
     http_response_code(200);
     echo json_encode(['status' => 'deferred']);
@@ -124,11 +139,11 @@ try {
 function buildProcessor(PluginConfig $config, Logger $logger): EventProcessor
 {
     $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
-    $tokenClient = new RevolutClient(new Client(), $config->environment());
+    $tokenClient = new RevolutClient(HttpClientFactory::create(), $config->environment());
     $tokenProvider = new TokenProvider($tokenClient, $config, new JwtClientAssertion(), $privateKey, time());
     $accessToken = $tokenProvider->getAccessToken();
 
-    $revolut = new RevolutClient(new Client(), $config->environment(), $accessToken);
+    $revolut = new RevolutClient(HttpClientFactory::create(), $config->environment(), $accessToken);
     $ucrm = SdkUcrmClient::create();
 
     return new EventProcessor(
@@ -160,7 +175,7 @@ function handleOAuthCallback(PluginConfig $config, Logger $logger): void
     try {
         $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
         $tokenProvider = new TokenProvider(
-            new RevolutClient(new Client(), $config->environment()),
+            new RevolutClient(HttpClientFactory::create(), $config->environment()),
             $config,
             new JwtClientAssertion(),
             $privateKey,
@@ -180,7 +195,7 @@ function handleOAuthCallback(PluginConfig $config, Logger $logger): void
                 );
             }
             $accessToken = $tokenProvider->getAccessToken();
-            $authedClient = new RevolutClient(new Client(), $config->environment(), $accessToken);
+            $authedClient = new RevolutClient(HttpClientFactory::create(), $config->environment(), $accessToken);
             $webhook = (new WebhooksApi($authedClient))->registerWebhook($webhookUrl);
 
             $config->set('webhookId', (string) ($webhook['id'] ?? ''));
@@ -232,13 +247,13 @@ function handleAccountsPage(PluginConfig $config, Logger $logger): void
     try {
         $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
         $tokenProvider = new TokenProvider(
-            new RevolutClient(new Client(), $config->environment()),
+            new RevolutClient(HttpClientFactory::create(), $config->environment()),
             $config,
             new JwtClientAssertion(),
             $privateKey,
             time(),
         );
-        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
+        $revolut = new RevolutClient(HttpClientFactory::create(), $config->environment(), $tokenProvider->getAccessToken());
         $accounts = (new AccountsApi($revolut))->listAccounts();
 
         $selected = $config->accountIds();
@@ -301,20 +316,37 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
         return;
     }
 
+    $health = (new SyncHealthStore(__DIR__ . '/data/health.json'))->load();
+
     try {
         $monthParam = isset($_GET['month']) && is_string($_GET['month']) ? $_GET['month'] : null;
         $window = MonthWindow::fromQuery($monthParam, time());
 
-        $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
-        $tokenProvider = new TokenProvider(
-            new RevolutClient(new Client(), $config->environment()),
-            $config,
-            new JwtClientAssertion(),
-            $privateKey,
-            time(),
-        );
-        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
-        $transactions = (new TransactionsApi($revolut))->listAllTransactions($window->fromIso, $window->toIso);
+        // Revolut is fetched in its OWN try: if it is down (blocked account,
+        // 401/403/429/5xx) we still render the UISP-side view and a clear banner
+        // instead of a 500 white page — the operator keeps a working window.
+        $transactions = [];
+        $revolutError = null;
+        $accountWarning = null;
+        try {
+            $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
+            $tokenProvider = new TokenProvider(
+                new RevolutClient(HttpClientFactory::create(), $config->environment()),
+                $config,
+                new JwtClientAssertion(),
+                $privateKey,
+                time(),
+            );
+            $revolut = new RevolutClient(HttpClientFactory::create(), $config->environment(), $tokenProvider->getAccessToken());
+            $transactions = (new TransactionsApi($revolut))->listAllTransactions($window->fromIso, $window->toIso);
+            $accountWarning = configuredAccountWarning($revolut, $config);
+        } catch (\Throwable $e) {
+            // Any Revolut/token-layer failure (RevolutApiException, reauthorization,
+            // or a plain token error like a 200-with-error-body) degrades to the
+            // UISP-only view with a banner instead of a 500. Rendered escaped.
+            $revolutError = $e->getMessage();
+            $logger->error('Status page: Revolut unavailable — ' . $e->getMessage());
+        }
 
         $ucrm = SdkUcrmClient::create();
         $payments = fetchMonthPayments($ucrm, $window->fromDate, $window->toDate);
@@ -361,7 +393,8 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
 
         renderUispPage(
             'Revolut преводи — ' . monthLabelBg($window->ym),
-            $flash . renderStatusBody($rows, $summary, $window, $clientNames, $crmUrl, $reimportTokens),
+            renderHealthBanner($health, $revolutError, $accountWarning) . $flash
+                . renderStatusBody($rows, $summary, $window, $clientNames, $crmUrl, $reimportTokens),
             $crmUrl,
         );
     } catch (\Throwable $e) {
@@ -370,6 +403,82 @@ function handleStatusPage(PluginConfig $config, Logger $logger): void
         http_response_code(500);
         renderUispPage('Грешка', '<p>Справката не можа да бъде заредена. Проверете лога на плъгина в UISP.</p>', $crmUrl);
     }
+}
+
+/**
+ * Health/degraded banner for the status page: a re-authorization notice, a
+ * "Revolut currently unavailable" warning (so a Revolut outage shows a message,
+ * not a blank/500 page), a non-active configured-account warning, and the last
+ * successful sync time. All inputs are plain strings rendered escaped.
+ */
+function renderHealthBanner(SyncHealth $health, ?string $revolutError, ?string $accountWarning): string
+{
+    $html = '';
+
+    if ($health->reauthRequired) {
+        $html .= '<div class="alert alert-danger py-2 mb-2">Изисква се повторно оторизиране към Revolut: '
+            . 'изчистете полето <strong>„Refresh token (managed)"</strong> в настройките на плъгина, запишете, '
+            . 'после отворете линка за съгласие от лога.</div>';
+    }
+
+    if ($revolutError !== null) {
+        $html .= '<div class="alert alert-danger py-2 mb-2">Revolut API е недостъпен в момента: <code>'
+            . htmlspecialchars($revolutError) . '</code>. Списъкът с Revolut преводи не може да бъде зареден сега — '
+            . 'опитайте отново по-късно. (Разнасянето на плащания продължава автоматично, щом Revolut отговори.)</div>';
+    }
+
+    if ($accountWarning !== null) {
+        $html .= '<div class="alert alert-warning py-2 mb-2">' . htmlspecialchars($accountWarning) . '</div>';
+    }
+
+    $sync = $health->lastSuccessAt !== null
+        ? 'Последна успешна синхронизация с Revolut: ' . gmdate('Y-m-d H:i', $health->lastSuccessAt) . ' UTC.'
+        : 'Все още няма записана успешна синхронизация с Revolut.';
+    if ($health->lastError !== null && $health->lastErrorAt !== null) {
+        $sync .= ' Последна грешка: ' . gmdate('Y-m-d H:i', $health->lastErrorAt) . ' UTC.';
+    }
+    $html .= '<p class="text-muted mb-3" style="font-size:.85rem">' . htmlspecialchars($sync) . '</p>';
+
+    return $html;
+}
+
+/**
+ * Best-effort check that every configured account id is present and active on
+ * Revolut. Returns a warning string (or null). Never throws — a Revolut failure
+ * here must not break the page (the caller handles Revolut errors separately).
+ */
+function configuredAccountWarning(RevolutClient $revolut, PluginConfig $config): ?string
+{
+    $selected = $config->accountIds();
+    if ($selected === []) {
+        return null;
+    }
+
+    try {
+        $byId = [];
+        foreach ((new AccountsApi($revolut))->listAccounts() as $account) {
+            if (is_array($account) && isset($account['id'])) {
+                $byId[strtolower((string) $account['id'])] = $account;
+            }
+        }
+    } catch (\Throwable $e) {
+        return null;
+    }
+
+    $problems = [];
+    foreach ($selected as $id) {
+        if (! isset($byId[$id])) {
+            $problems[] = 'сметка ' . $id . ' не е върната от Revolut (проверете филтъра „Revolut accounts to import from")';
+
+            continue;
+        }
+        $state = strtolower((string) ($byId[$id]['state'] ?? ''));
+        if ($state !== '' && $state !== 'active') {
+            $problems[] = 'сметка ' . (string) ($byId[$id]['name'] ?? $id) . ' е в състояние „' . $state . '" (не е active)';
+        }
+    }
+
+    return $problems === [] ? null : 'Внимание: ' . implode('; ', $problems) . '.';
 }
 
 /**
@@ -406,13 +515,13 @@ function handleReimportAction(PluginConfig $config, Logger $logger): void
     try {
         $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
         $tokenProvider = new TokenProvider(
-            new RevolutClient(new Client(), $config->environment()),
+            new RevolutClient(HttpClientFactory::create(), $config->environment()),
             $config,
             new JwtClientAssertion(),
             $privateKey,
             time(),
         );
-        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
+        $revolut = new RevolutClient(HttpClientFactory::create(), $config->environment(), $tokenProvider->getAccessToken());
         $transaction = (new TransactionsApi($revolut))->getTransaction($txId);
         if ($transaction === null) {
             http_response_code(404);
@@ -586,6 +695,7 @@ function renderStatusBody(array $rows, array $summary, MonthWindow $window, arra
         StatusRow::STATUS_SKIPPED => ['⏭ Пропуснат (ръчно плащане)', 'secondary'],
         StatusRow::STATUS_GONE => ['🗑 Обработено, но липсва', 'info'],
         StatusRow::STATUS_MISSING => ['❌ Липсва', 'danger'],
+        StatusRow::STATUS_REVERTED => ['↩️ Върнат от Revolut — сторнирайте плащането', 'danger'],
     ];
 
     $options = '';
@@ -736,13 +846,13 @@ function handleRawPage(PluginConfig $config, Logger $logger): void
     try {
         $privateKey = (string) file_get_contents(__DIR__ . '/data/keys/private.pem');
         $tokenProvider = new TokenProvider(
-            new RevolutClient(new Client(), $config->environment()),
+            new RevolutClient(HttpClientFactory::create(), $config->environment()),
             $config,
             new JwtClientAssertion(),
             $privateKey,
             time(),
         );
-        $revolut = new RevolutClient(new Client(), $config->environment(), $tokenProvider->getAccessToken());
+        $revolut = new RevolutClient(HttpClientFactory::create(), $config->environment(), $tokenProvider->getAccessToken());
 
         $sections = '';
         $transaction = [];

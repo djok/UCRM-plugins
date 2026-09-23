@@ -21,6 +21,8 @@ final class StatusRow
     public const STATUS_GONE = 'gone';
     /** The plugin never handled this transaction. */
     public const STATUS_MISSING = 'missing';
+    /** Revolut reverted the transfer after a payment was recorded — reverse it manually. */
+    public const STATUS_REVERTED = 'reverted';
 
     public function __construct(
         public readonly string $transactionId,

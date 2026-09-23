@@ -71,7 +71,12 @@ final class MonthlyStatusReport
                 continue; // listAllTransactions may duplicate a pagination-boundary item
             }
             $seen[$id] = true;
-            if (($transaction['state'] ?? null) !== 'completed') {
+            $state = $transaction['state'] ?? null;
+            $isReverted = $state === 'reverted';
+            // Completed transfers are the norm; a reverted one is kept ONLY to warn
+            // that a recorded payment must be reversed (handled below). Every other
+            // non-completed state (pending/created/declined/failed) is not shown.
+            if ($state !== 'completed' && ! $isReverted) {
                 continue;
             }
             if (! in_array($transaction['type'] ?? null, self::INCOMING_TYPES, true)) {
@@ -112,7 +117,14 @@ final class MonthlyStatusReport
             $clientId = $payment !== null && isset($payment['clientId']) && $payment['clientId'] !== null
                 ? (int) $payment['clientId']
                 : null;
-            if ($payment !== null) {
+            if ($isReverted) {
+                // Revolut reverted this transfer. Only worth a row if we recorded a
+                // payment for it — that payment now needs a manual reversal in UISP.
+                if ($payment === null) {
+                    continue;
+                }
+                $status = StatusRow::STATUS_REVERTED;
+            } elseif ($payment !== null) {
                 $status = $clientId !== null ? StatusRow::STATUS_ASSIGNED : StatusRow::STATUS_UNASSIGNED;
             } elseif ($isProcessed($id)) {
                 // Processed without an importable payment: either the duplicate
@@ -225,6 +237,7 @@ final class MonthlyStatusReport
             StatusRow::STATUS_SKIPPED,
             StatusRow::STATUS_GONE,
             StatusRow::STATUS_MISSING,
+            StatusRow::STATUS_REVERTED,
         ];
         $summary = [];
         foreach ($statuses as $status) {

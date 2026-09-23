@@ -22,6 +22,9 @@ final class EventProcessor
 {
     private const INCOMING_TYPES = ['transfer', 'topup'];
 
+    /** Terminal Revolut states that never become a payment (blocked account, returned funds). */
+    private const TERMINAL_NON_PAYMENT = ['declined', 'failed', 'reverted'];
+
     /** @var list<string> lowercase account ids; empty = import from all accounts */
     private readonly array $allowedAccountIds;
 
@@ -51,6 +54,19 @@ final class EventProcessor
             return;
         }
 
+        // Short-circuit already-processed ids WITHOUT a Revolut fetch: failed-event
+        // replay re-delivers the same events for 21 days, and refetching each one
+        // wastes the 60 req/min budget (and can 429 the whole run). The only case
+        // worth attention is a reversal of a transaction we already recorded.
+        if ($this->idempotency->isProcessed($id)) {
+            $state = $event['data']['new_state'] ?? $event['data']['state'] ?? null;
+            if ($state === 'reverted') {
+                $this->alertReverted($id);
+            }
+
+            return;
+        }
+
         $transaction = $this->transactions->getTransaction($id);
         if ($transaction === null) {
             $this->logger->error(sprintf('Transaction %s not found; skipping.', $id));
@@ -68,13 +84,28 @@ final class EventProcessor
         if (! is_string($id) || $id === '') {
             return;
         }
+        $state = $transaction['state'] ?? null;
+
         if ($this->idempotency->isProcessed($id)) {
+            // Already handled. Surface a post-recording reversal (once); stay silent otherwise.
+            if ($state === 'reverted') {
+                $this->alertReverted($id);
+            }
+
             return;
         }
 
-        $state = $transaction['state'] ?? null;
         if ($state !== 'completed') {
-            // Not final yet — do NOT mark processed; a later event will complete it.
+            if (in_array($state, self::TERMINAL_NON_PAYMENT, true)) {
+                // Blocked/declined/returned — terminal, will never become a payment.
+                // Mark processed so replay/reconciliation stop re-examining it forever.
+                $this->idempotency->markProcessed($id);
+                $this->logger->info(sprintf('Transaction %s state=%s; terminal, no payment recorded.', $id, (string) $state));
+
+                return;
+            }
+
+            // created/pending — not final yet; do NOT mark processed, a later event completes it.
             $this->logger->info(sprintf('Transaction %s state=%s; waiting for completion.', $id, (string) $state));
 
             return;
@@ -190,6 +221,24 @@ final class EventProcessor
         }
 
         return ['iban' => $iban, 'name' => $name];
+    }
+
+    /**
+     * Logs the "reverse this payment manually" alert at most once per transaction.
+     * Failed-event replay (21-day window) and reconciliation both re-observe the
+     * same reversal repeatedly; a namespaced idempotency key keeps it to one line.
+     */
+    private function alertReverted(string $id): void
+    {
+        $key = $id . '#reverted-alerted';
+        if ($this->idempotency->isProcessed($key)) {
+            return;
+        }
+        $this->idempotency->markProcessed($key);
+        $this->logger->error(sprintf(
+            'Transaction %s was REVERTED by Revolut after its payment was recorded in UISP — reverse the payment manually.',
+            $id,
+        ));
     }
 
     private function matchClient(?string $iban): ?int

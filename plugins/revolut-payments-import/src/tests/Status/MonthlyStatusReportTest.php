@@ -69,6 +69,33 @@ final class MonthlyStatusReportTest extends TestCase
         self::assertSame([], (new MonthlyStatusReport())->build([$out], [], self::notProcessed()));
     }
 
+    public function testRevertedTransactionWithRecordedPaymentYieldsRevertedRow(): void
+    {
+        $tx = $this->tx('tx-rev', 100.0, ['state' => 'reverted']);
+        $payments = [[
+            'providerName' => 'Revolut',
+            'providerPaymentId' => 'tx-rev',
+            'clientId' => 7,
+            'amount' => 100.0,
+            'createdDate' => '2026-06-15T10:00:00Z',
+        ]];
+
+        $report = new MonthlyStatusReport();
+        $rows = $report->build([$tx], $payments, static fn (string $id): bool => true);
+
+        self::assertCount(1, $rows);
+        self::assertSame(StatusRow::STATUS_REVERTED, $rows[0]->status);
+        self::assertSame(7, $rows[0]->clientId);
+        self::assertSame(1, $report->summarize($rows)[StatusRow::STATUS_REVERTED]['count']);
+    }
+
+    public function testRevertedTransactionWithoutPaymentIsSkipped(): void
+    {
+        $tx = $this->tx('tx-rev', 100.0, ['state' => 'reverted']);
+
+        self::assertSame([], (new MonthlyStatusReport())->build([$tx], [], self::notProcessed()));
+    }
+
     public function testAccountFilterIsCaseInsensitive(): void
     {
         $report = new MonthlyStatusReport(['ACC-1']);

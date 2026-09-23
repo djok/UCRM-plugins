@@ -370,6 +370,143 @@ final class EventProcessorTest extends TestCase
         self::assertCount(1, $recorder->records);
         self::assertSame(1, $recorder->records[0]->clientId);
     }
+
+    public function testDeclinedTransactionIsTerminalAndMarkedProcessed(): void
+    {
+        $recorder = new RecordingRecorder();
+        $declined = $this->completedIncoming();
+        $declined['state'] = 'declined';
+        $processor = $this->makeProcessor(['tx-1' => $declined], [], null, $recorder);
+
+        $processor->processEvent(['event' => 'TransactionStateChanged', 'data' => ['id' => 'tx-1', 'new_state' => 'declined']]);
+        self::assertCount(0, $recorder->records);
+
+        // Marked terminal: even if the SAME id later appears completed, it is skipped
+        // (declined/failed/reverted never become a payment). Same store path on disk.
+        $recorder2 = new RecordingRecorder();
+        $processor2 = $this->makeProcessor(
+            ['tx-1' => $this->completedIncoming()],
+            ['cp-1' => ['id' => 'cp-1', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]],
+            ['id' => 5],
+            $recorder2,
+        );
+        $processor2->processEvent(['event' => 'TransactionStateChanged', 'data' => ['id' => 'tx-1']]);
+        self::assertCount(0, $recorder2->records);
+    }
+
+    public function testFailedTransactionIsTerminal(): void
+    {
+        $recorder = new RecordingRecorder();
+        $failed = $this->completedIncoming();
+        $failed['state'] = 'failed';
+        $processor = $this->makeProcessor(['tx-1' => $failed], [], null, $recorder);
+
+        $processor->processEvent(['event' => 'TransactionStateChanged', 'data' => ['id' => 'tx-1']]);
+
+        self::assertCount(0, $recorder->records);
+    }
+
+    public function testRevertedAfterRecordedLogsErrorAndKeepsSinglePayment(): void
+    {
+        $lines = [];
+        $logger = new Logger(function (string $l) use (&$lines): void {
+            $lines[] = $l;
+        });
+        $recorder = new RecordingRecorder();
+        $store = new IdempotencyStore($this->storePath);
+
+        $completed = $this->completedIncoming();
+        $reverted = $this->completedIncoming();
+        $reverted['state'] = 'reverted';
+
+        $txSource = new class(['tx-1' => $completed]) implements TransactionSource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getTransaction(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        $cpSource = new class(['cp-1' => ['id' => 'cp-1', 'name' => 'X', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]]) implements CounterpartySource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getCounterparty(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                return ['id' => 3];
+            }
+        };
+
+        $processor = new EventProcessor($txSource, $cpSource, $clients, $recorder, $store, $logger);
+
+        $processor->processTransaction($completed);
+        self::assertCount(1, $recorder->records);
+
+        // Now Revolut reverts the same transaction after we recorded it — twice
+        // (reconciliation + replay re-observe it). The alert must fire only ONCE.
+        $processor->processTransaction($reverted);
+        $processor->processTransaction($reverted);
+        $processor->processEvent(['data' => ['id' => 'tx-1', 'new_state' => 'reverted']]);
+        self::assertCount(1, $recorder->records, 'no second payment for a reversal');
+        self::assertCount(
+            1,
+            array_filter($lines, static fn (string $l): bool => str_contains($l, 'REVERTED')),
+            'the manual-reversal alert must be logged at most once',
+        );
+    }
+
+    public function testProcessedIdStateChangeDoesNotRefetchTransaction(): void
+    {
+        $recorder = new RecordingRecorder();
+        $store = new IdempotencyStore($this->storePath);
+
+        $txSource = new class(['tx-1' => $this->completedIncoming()]) implements TransactionSource {
+            public int $calls = 0;
+            public function __construct(private array $map)
+            {
+            }
+            public function getTransaction(string $id): ?array
+            {
+                $this->calls++;
+
+                return $this->map[$id] ?? null;
+            }
+        };
+        $cpSource = new class(['cp-1' => ['id' => 'cp-1', 'accounts' => [['iban' => 'BG80BNBG96611020345678']]]]) implements CounterpartySource {
+            public function __construct(private array $map)
+            {
+            }
+            public function getCounterparty(string $id): ?array
+            {
+                return $this->map[$id] ?? null;
+            }
+        };
+        $clients = new class implements ClientRepository {
+            public function findClientByIban(string $iban): ?array
+            {
+                return ['id' => 9];
+            }
+        };
+        $logger = new Logger(static fn (string $l) => null);
+
+        $processor = new EventProcessor($txSource, $cpSource, $clients, $recorder, $store, $logger);
+
+        $processor->processEvent(['event' => 'TransactionCreated', 'data' => ['id' => 'tx-1']]);
+        self::assertSame(1, $txSource->calls);
+        self::assertCount(1, $recorder->records);
+
+        // A later state-change event for the already-processed id must NOT hit Revolut.
+        $processor->processEvent(['event' => 'TransactionStateChanged', 'data' => ['id' => 'tx-1', 'new_state' => 'completed']]);
+        self::assertSame(1, $txSource->calls, 'no refetch for an already-processed id');
+        self::assertCount(1, $recorder->records);
+    }
 }
 
 final class RecordingRecorder implements PaymentRecorder

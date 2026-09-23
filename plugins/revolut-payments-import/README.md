@@ -127,6 +127,37 @@ acquirer top-ups) appear as unassigned payments to clean up manually.
 - The private key lives in `data/keys/private.pem` (web-denied, never shipped in
   the archive, gitignored).
 
+## Resilience when Revolut is unavailable
+A blocked/restricted Revolut account, an expired authorization, or a Revolut
+outage no longer takes down the whole integration (v1.10.0):
+- **Isolated cron stages.** `main.php` runs token refresh, failed-event replay,
+  reconciliation and the statement-CSV import as independent stages. A Revolut
+  failure (401/403/429/5xx, or the `failed-events` 500 Revolut sometimes
+  returns) fails only its own stage — the **statement CSV import still runs**,
+  since it needs only UISP and the uploaded file.
+- **Structured, redacted errors.** Every Revolut call maps transport failures to
+  a `RevolutApiException` carrying the HTTP status and Revolut error code; the
+  log line names the endpoint and status without the query string or token.
+- **Clear re-authorization signal.** If the stored refresh token is rejected
+  (HTTP 400/401), the log says to clear the *Refresh token (managed)* field and
+  re-open the consent URL. The token is never auto-cleared on a transient error.
+- **Degraded status page.** When Revolut is unreachable the monthly page shows
+  the UISP-side data plus a banner (last successful sync time / a
+  re-authorization notice / a non-`active` account warning) instead of a blank
+  500. Webhook deliveries that cannot be authoritatively processed return HTTP
+  503 so Revolut retries and parks them in failed-events for later replay,
+  rather than being silently acknowledged and dropped.
+- **Terminal transaction states.** `declined`/`failed`/`reverted` transfers are
+  recognized as terminal (no payment, no endless "waiting for completion" log
+  spam). A transfer that is `reverted` **after** its payment was recorded logs a
+  clear warning and is flagged on the status page — reverse that payment by hand.
+
+Note: if Revolut has **blocked the money flow** on the account, the API reports
+zero incoming transactions and the account may still read `state=active`; the
+plugin then correctly imports nothing. That is an account/compliance matter to
+resolve with Revolut support — the integration resumes on its own once transfers
+flow again (keep the scheduled execution enabled so reconciliation catches up).
+
 ## Notes / known limitations
 - Revolut access token lives ~40 min; the refresh token is refreshed
   automatically. If refresh ever fails, clear the stored tokens and re-run the

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace RevolutPaymentsImport\Revolut;
 
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\TransferException;
 use GuzzleHttp\Psr7\Request;
 use Psr\Http\Message\ResponseInterface;
 
@@ -43,7 +44,7 @@ final class RevolutClient
             $url .= '?' . http_build_query($query);
         }
 
-        return $this->decode($this->http->send($this->authorized('GET', $url)));
+        return $this->send('GET', $path, $this->authorized('GET', $url));
     }
 
     /**
@@ -59,7 +60,7 @@ final class RevolutClient
             (string) json_encode($json),
         );
 
-        return $this->decode($this->http->send($request));
+        return $this->send('POST', $path, $request);
     }
 
     /**
@@ -78,7 +79,23 @@ final class RevolutClient
             http_build_query($form),
         );
 
-        return $this->decode($this->http->send($request));
+        return $this->send('POST', $path, $request);
+    }
+
+    /**
+     * Sends a prepared request and decodes the JSON body, translating any Guzzle
+     * transport failure (4xx/5xx/connection) into a classified RevolutApiException
+     * carrying the clean $path (never the query string, which may hold ids).
+     *
+     * @return array<mixed>
+     */
+    private function send(string $method, string $path, Request $request): array
+    {
+        try {
+            return $this->decode($this->http->send($request));
+        } catch (TransferException $e) {
+            throw RevolutErrorMapper::fromGuzzle($e, $method, $path);
+        }
     }
 
     /** @param array<string,string> $extraHeaders */

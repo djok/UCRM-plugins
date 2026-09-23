@@ -6,9 +6,11 @@ require __DIR__ . '/vendor/autoload.php';
 use Ubnt\UcrmPluginSdk\Service\PluginLogManager;
 use Ubnt\UcrmPluginSdk\Service\UcrmOptionsManager;
 use RevolutPaymentsImport\Auth\JwtClientAssertion;
+use RevolutPaymentsImport\Auth\ReauthorizationRequiredException;
 use RevolutPaymentsImport\Auth\TokenProvider;
 use RevolutPaymentsImport\Config\PluginConfig;
 use RevolutPaymentsImport\Revolut\AccountsApi;
+use RevolutPaymentsImport\Revolut\HttpClientFactory;
 use RevolutPaymentsImport\Revolut\RevolutClient;
 use RevolutPaymentsImport\Revolut\WebhooksApi;
 
@@ -28,7 +30,7 @@ if (! is_file($privateKeyPath)) {
 }
 $privateKeyPem = (string) file_get_contents($privateKeyPath);
 
-$client = new RevolutClient(new \GuzzleHttp\Client(), $config->environment());
+$client = new RevolutClient(HttpClientFactory::create(), $config->environment());
 $tokenProvider = new TokenProvider($client, $config, new JwtClientAssertion(), $privateKeyPem, time());
 
 // 2) If we have no refresh token, we need consent. If an auth code was pasted, exchange it.
@@ -68,7 +70,7 @@ if ($config->webhookId() === null) {
 
     try {
         $accessToken = $tokenProvider->getAccessToken();
-        $authedClient = new RevolutClient(new \GuzzleHttp\Client(), $config->environment(), $accessToken);
+        $authedClient = new RevolutClient(HttpClientFactory::create(), $config->environment(), $accessToken);
         $webhook = (new WebhooksApi($authedClient))->registerWebhook($publicUrl);
 
         $config->set('webhookId', (string) ($webhook['id'] ?? ''));
@@ -83,29 +85,37 @@ if ($config->webhookId() === null) {
     }
 }
 
-$logManager->appendLog('[configure] Setup complete. Incoming Revolut payments will now be imported.');
-
-// List the available accounts so the user can pick ids for "Revolut accounts to import from".
+// Verify the stored token still works and list the accounts (with state) so the
+// user can pick ids for "Revolut accounts to import from". Only declare success
+// AFTER the token is proven — a dead refresh token must not be reported as "complete".
 try {
     $accessToken = $tokenProvider->getAccessToken();
-    $authedClient = new RevolutClient(new \GuzzleHttp\Client(), $config->environment(), $accessToken);
+    $authedClient = new RevolutClient(HttpClientFactory::create(), $config->environment(), $accessToken);
     $accounts = (new AccountsApi($authedClient))->listAccounts();
+
+    $logManager->appendLog('[configure] Setup complete. Incoming Revolut payments will now be imported.');
 
     $selected = $config->accountIds();
     $logManager->appendLog('[configure] Available Revolut accounts (paste the id(s) into "Revolut accounts to import from"; empty = all):');
     foreach ($accounts as $account) {
         $id = (string) ($account['id'] ?? '?');
+        $state = strtolower((string) ($account['state'] ?? ''));
         $mark = $selected === [] || in_array(strtolower($id), $selected, true) ? ' [importing]' : '';
+        $stateMark = ($state !== '' && $state !== 'active') ? ' [' . strtoupper($state) . ']' : '';
         $logManager->appendLog(sprintf(
-            '  - %s | %s | id: %s%s',
+            '  - %s | %s | id: %s%s%s',
             (string) ($account['name'] ?? '?'),
             (string) ($account['currency'] ?? '?'),
             $id,
+            $stateMark,
             $mark,
         ));
     }
+} catch (ReauthorizationRequiredException $e) {
+    $logManager->appendLog('[configure] ' . $e->getMessage());
+    $logManager->appendLog('[configure] Consent URL: ' . consentUrl($config));
 } catch (\Throwable $e) {
-    $logManager->appendLog('[configure] Could not list accounts: ' . $e->getMessage());
+    $logManager->appendLog('[configure] Could not verify Revolut access / list accounts: ' . $e->getMessage());
 }
 
 function consentUrl(PluginConfig $config): string
